@@ -24,18 +24,21 @@ function parseRecurrenceInput(formData: FormData): RecurrenceRule | null | { err
       return { type: "daily" };
 
     case "weekdays": {
-      const days = Array.from(
-        new Set(
-          formData
-            .getAll("weekdays")
-            .map((value) => Number(value))
-            .filter((value): value is Weekday => Number.isInteger(value) && value >= 0 && value <= 6),
-        ),
-      );
-      if (days.length === 0) {
+      const rawDays = formData.getAll("weekdays");
+      if (rawDays.length === 0) {
         return { error: "Select at least one weekday." };
       }
-      return { type: "weekdays", days };
+
+      const days: Weekday[] = [];
+      for (const raw of rawDays) {
+        const value = Number(raw);
+        if (!Number.isInteger(value) || value < 0 || value > 6) {
+          return { error: "Invalid weekday selection." };
+        }
+        days.push(value as Weekday);
+      }
+
+      return { type: "weekdays", days: Array.from(new Set(days)) };
     }
 
     case "timesPerWeek": {

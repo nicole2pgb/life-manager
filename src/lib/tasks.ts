@@ -79,17 +79,22 @@ export function toggleTaskOccurrence(id: string): Task | null {
   const task = tasks.find((t) => t.id === id);
   if (!task) return null;
 
+  // Capture one instant and derive everything from it, so a midnight
+  // crossing between calls can't put the weekday/due check and the
+  // recorded occurrence date on different calendar days.
+  const now = new Date();
+
   if (task.recurrence === null) {
     task.completed = !task.completed;
-    task.updatedAt = new Date().toISOString();
+    task.updatedAt = now.toISOString();
     return task;
   }
 
-  if (!isDueOn(task.recurrence, getWeekday(new Date()))) {
+  if (!isDueOn(task.recurrence, getWeekday(now))) {
     return task;
   }
 
-  const occurrenceDate = getTodayISODate();
+  const occurrenceDate = getTodayISODate(now);
   const existingIndex = completions.findIndex(
     (c) => c.taskId === id && c.occurrenceDate === occurrenceDate,
   );
@@ -100,19 +105,21 @@ export function toggleTaskOccurrence(id: string): Task | null {
       id: randomUUID(),
       taskId: id,
       occurrenceDate,
-      completedAt: new Date().toISOString(),
+      completedAt: now.toISOString(),
     });
   }
 
-  task.updatedAt = new Date().toISOString();
+  task.updatedAt = now.toISOString();
   return task;
 }
 
 export function getTaskViewModels(): TaskViewModel[] {
-  const today = new Date();
-  const todayISO = getTodayISODate();
-  const todayWeekday = getWeekday(today);
-  const { start, end } = getWeekRange(today);
+  // Capture one instant and derive today's date, weekday, and week range
+  // from it, so they can't disagree about what day "now" falls on.
+  const now = new Date();
+  const todayISO = getTodayISODate(now);
+  const todayWeekday = getWeekday(now);
+  const { start, end } = getWeekRange(now);
 
   return getTasks().map((task) => {
     if (task.recurrence === null) {
@@ -121,7 +128,10 @@ export function getTaskViewModels(): TaskViewModel[] {
 
     const taskCompletions = getCompletionsForTask(task.id);
     const isDueToday = isDueOn(task.recurrence, todayWeekday);
-    const isCompletedToday = taskCompletions.some((c) => c.occurrenceDate === todayISO);
+    // A completion recorded under a since-changed recurrence rule must not
+    // make a currently non-due occurrence look completed.
+    const isCompletedToday =
+      isDueToday && taskCompletions.some((c) => c.occurrenceDate === todayISO);
     const weeklyCompletedCount =
       task.recurrence.type === "timesPerWeek"
         ? new Set(

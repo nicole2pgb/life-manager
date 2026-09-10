@@ -10,8 +10,12 @@ function formatISODate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-export function getTodayISODate(): string {
-  return formatISODate(new Date());
+// Takes an explicit `date` rather than reading the clock itself, so callers
+// that also need the weekday/week-range for "now" derive every value from
+// the same captured instant instead of risking a midnight crossing between
+// separate `new Date()` calls.
+export function getTodayISODate(date: Date): string {
+  return formatISODate(date);
 }
 
 export function getWeekday(date: Date): Weekday {
