@@ -116,5 +116,9 @@ export async function toggleTaskAction(formData: FormData): Promise<void> {
   if (!id) return;
 
   toggleTaskOccurrence(id);
+  // This action is invoked from both the Tasks page and Weekly Overview —
+  // revalidate both so checkbox state, TaskCompletion state, and the
+  // times-per-week count stay in sync regardless of which page toggled it.
   revalidatePath("/");
+  revalidatePath("/weekly");
 }

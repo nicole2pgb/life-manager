@@ -166,11 +166,13 @@ export function getTaskViewModels(): TaskViewModel[] {
 
 // Builds the Monday-Sunday week containing `anchorDate` for the Weekly
 // Overview page — see specs/weekly-overview.md. `anchorDate` picks *which*
-// week to show; "today"/"now" for due-ness and interactivity is always the
-// real current instant, captured separately, regardless of which week is
-// being displayed.
-export function getWeeklyOverview(anchorDate: Date): WeeklyOverview {
-  const now = new Date();
+// week to show; `now` is the real current instant used for every "is this
+// today/this week" check, regardless of which week is being displayed.
+// Callers must capture `now` once themselves (e.g. also to default
+// `anchorDate` when no week param is supplied) rather than letting this
+// function read the clock again, so the two can't disagree across a
+// midnight crossing within the same request.
+export function getWeeklyOverview(anchorDate: Date, now: Date): WeeklyOverview {
   const todayISO = getTodayISODate(now);
   const { start, end, startDate } = getWeekRange(anchorDate);
   const weekContainsToday = todayISO >= start && todayISO <= end;

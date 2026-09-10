@@ -16,8 +16,13 @@ export default async function WeeklyPage({
   searchParams: Promise<{ week?: string }>;
 }) {
   const { week } = await searchParams;
-  const anchorDate = (week && parseISODate(week)) || new Date();
-  const overview = getWeeklyOverview(anchorDate);
+  // Capture one instant for this request: it's the default anchor date when
+  // no valid `week` param is supplied, and it's also what `getWeeklyOverview`
+  // uses for every "is this today/this week" check — so the two can't
+  // disagree if a request happens to straddle midnight.
+  const now = new Date();
+  const anchorDate = (week && parseISODate(week)) || now;
+  const overview = getWeeklyOverview(anchorDate, now);
 
   const weekStartDate = parseISODate(overview.weekStart) as Date;
   const prevWeekDate = new Date(
