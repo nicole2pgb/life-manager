@@ -31,6 +31,44 @@ export type TaskViewModel = {
   weeklyCompletedCount: number; // meaningful only for recurrence.type === "timesPerWeek"
 };
 
+// Weekly Overview view models — see specs/weekly-overview.md.
+export type DayColumn = {
+  date: string; // "YYYY-MM-DD"
+  weekday: Weekday;
+  isToday: boolean; // true only for the day matching the server's current date
+  items: WeeklyDayItem[];
+};
+
+export type WeeklyDayItem = {
+  task: Task; // recurrence is "daily" or "weekdays" for day items — one-off tasks never appear here
+  isCompleted: boolean;
+  isInteractive: boolean; // === isToday of the containing DayColumn
+};
+
+export type WeeklyTimesPerWeekItem = {
+  task: Task; // recurrence.type === "timesPerWeek"
+  completedCount: number;
+  targetCount: number; // task.recurrence.count
+  isInteractive: boolean; // true only if the displayed week contains today
+  isCompletedToday: boolean; // whether today specifically has a TaskCompletion; only meaningful when isInteractive
+};
+
+// A one-off task that is still incomplete and eligible for the displayed
+// week (see specs/weekly-overview.md "Open Tasks"). Every entry here is
+// incomplete by construction — completed one-off tasks are simply absent.
+export type WeeklyOpenTask = {
+  task: Task; // recurrence === null, task.completed === false
+  isInteractive: boolean; // true only if the displayed week contains today
+};
+
+export type WeeklyOverview = {
+  weekStart: string; // Monday, "YYYY-MM-DD"
+  weekEnd: string; // Sunday, "YYYY-MM-DD"
+  days: DayColumn[]; // exactly 7 entries, Monday..Sunday in order — one-off tasks never appear in these
+  openTasks: WeeklyOpenTask[]; // incomplete one-off tasks, shown once per week, not per day
+  timesPerWeekItems: WeeklyTimesPerWeekItem[];
+};
+
 export const TASK_TITLE_MAX_LENGTH = 200;
 export const TASK_NOTES_MAX_LENGTH = 2000;
 
