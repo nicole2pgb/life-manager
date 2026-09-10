@@ -134,7 +134,7 @@ export default async function WeeklyPage({
 
           {overview.timesPerWeekItems.length > 0 && (
             <div className="flex flex-col gap-2">
-              <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">This week</h2>
+              <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Weekly summary</h2>
               <ul className="flex flex-col gap-2">
                 {overview.timesPerWeekItems.map((item) => (
                   <li
@@ -143,7 +143,7 @@ export default async function WeeklyPage({
                   >
                     <WeeklyToggle
                       taskId={item.task.id}
-                      label={`${item.task.title} — ${item.completedCount}/${item.targetCount} this week`}
+                      label={`${item.task.title} — ${item.completedCount}/${item.targetCount}`}
                       completed={item.isCompletedToday}
                       interactive={item.isInteractive}
                     />
