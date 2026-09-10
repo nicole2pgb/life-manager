@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useRef, useState, useTransition, type FormEvent } from "react";
 import { createTaskAction } from "@/lib/task-actions";
 import { TASK_NOTES_MAX_LENGTH, TASK_TITLE_MAX_LENGTH } from "@/lib/task-types";
 
@@ -9,7 +9,10 @@ export function TaskForm() {
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  function handleSubmit(formData: FormData) {
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+
     startTransition(async () => {
       const result = await createTaskAction(formData);
       if (result.error) {
@@ -24,7 +27,7 @@ export function TaskForm() {
   return (
     <form
       ref={formRef}
-      action={handleSubmit}
+      onSubmit={handleSubmit}
       className="flex flex-col gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
     >
       <div className="flex flex-col gap-1">

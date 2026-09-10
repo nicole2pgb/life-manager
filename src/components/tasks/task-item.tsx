@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, type FormEvent } from "react";
 import { TASK_NOTES_MAX_LENGTH, TASK_TITLE_MAX_LENGTH, type Task } from "@/lib/task-types";
 import { deleteTaskAction, toggleTaskAction, updateTaskAction } from "@/lib/task-actions";
 
@@ -17,7 +17,10 @@ export function TaskItem({ task }: { task: Task }) {
     });
   }
 
-  function handleSave(formData: FormData) {
+  function handleSave(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+
     startTransition(async () => {
       const result = await updateTaskAction(formData);
       if (result.error) {
@@ -40,7 +43,7 @@ export function TaskItem({ task }: { task: Task }) {
   if (isEditing) {
     return (
       <li className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-        <form action={handleSave} className="flex flex-col gap-3">
+        <form onSubmit={handleSave} className="flex flex-col gap-3">
           <input type="hidden" name="id" value={task.id} />
           <input
             name="title"
