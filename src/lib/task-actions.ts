@@ -1,14 +1,64 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createTask, deleteTask, toggleTaskCompleted, updateTask } from "@/lib/tasks";
-import { TASK_TITLE_MAX_LENGTH, TASK_NOTES_MAX_LENGTH } from "@/lib/task-types";
+import { createTask, deleteTask, toggleTaskOccurrence, updateTask } from "@/lib/tasks";
+import {
+  TASK_TITLE_MAX_LENGTH,
+  TASK_NOTES_MAX_LENGTH,
+  TIMES_PER_WEEK_MAX,
+  TIMES_PER_WEEK_MIN,
+  type RecurrenceRule,
+  type Weekday,
+} from "@/lib/task-types";
 
 export type TaskActionResult = { error: string | null };
 
+function parseRecurrenceInput(formData: FormData): RecurrenceRule | null | { error: string } {
+  const type = String(formData.get("recurrenceType") ?? "none");
+
+  switch (type) {
+    case "none":
+      return null;
+
+    case "daily":
+      return { type: "daily" };
+
+    case "weekdays": {
+      const rawDays = formData.getAll("weekdays");
+      if (rawDays.length === 0) {
+        return { error: "Select at least one weekday." };
+      }
+
+      const days: Weekday[] = [];
+      for (const raw of rawDays) {
+        const value = Number(raw);
+        if (!Number.isInteger(value) || value < 0 || value > 6) {
+          return { error: "Invalid weekday selection." };
+        }
+        days.push(value as Weekday);
+      }
+
+      return { type: "weekdays", days: Array.from(new Set(days)) };
+    }
+
+    case "timesPerWeek": {
+      const count = Number(formData.get("timesPerWeekCount"));
+      if (!Number.isInteger(count) || count < TIMES_PER_WEEK_MIN || count > TIMES_PER_WEEK_MAX) {
+        return {
+          error: `Times per week must be a whole number between ${TIMES_PER_WEEK_MIN} and ${TIMES_PER_WEEK_MAX}.`,
+        };
+      }
+      return { type: "timesPerWeek", count };
+    }
+
+    default:
+      return { error: "Invalid recurrence type." };
+  }
+}
+
 function parseTaskInput(
   formData: FormData,
-): { title: string; notes: string | null } | { error: string } {
+): { title: string; notes: string | null; recurrence: RecurrenceRule | null } | { error: string } {
   const title = String(formData.get("title") ?? "").trim();
   const notes = String(formData.get("notes") ?? "").trim();
 
@@ -22,7 +72,12 @@ function parseTaskInput(
     return { error: `Notes must be ${TASK_NOTES_MAX_LENGTH} characters or fewer.` };
   }
 
-  return { title, notes: notes || null };
+  const recurrence = parseRecurrenceInput(formData);
+  if (recurrence !== null && "error" in recurrence) {
+    return { error: recurrence.error };
+  }
+
+  return { title, notes: notes || null, recurrence };
 }
 
 export async function createTaskAction(formData: FormData): Promise<TaskActionResult> {
@@ -60,6 +115,6 @@ export async function toggleTaskAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   if (!id) return;
 
-  toggleTaskCompleted(id);
+  toggleTaskOccurrence(id);
   revalidatePath("/");
 }

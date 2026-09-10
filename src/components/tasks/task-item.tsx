@@ -1,10 +1,23 @@
 "use client";
 
 import { useState, useTransition, type FormEvent } from "react";
-import { TASK_NOTES_MAX_LENGTH, TASK_TITLE_MAX_LENGTH, type Task } from "@/lib/task-types";
+import {
+  TASK_NOTES_MAX_LENGTH,
+  TASK_TITLE_MAX_LENGTH,
+  formatRecurrenceLabel,
+  type Task,
+} from "@/lib/task-types";
 import { deleteTaskAction, toggleTaskAction, updateTaskAction } from "@/lib/task-actions";
+import { RecurrenceFields } from "@/components/tasks/recurrence-fields";
 
-export function TaskItem({ task }: { task: Task }) {
+type TaskItemProps = {
+  task: Task;
+  isDueToday: boolean;
+  isCompletedToday: boolean;
+  weeklyCompletedCount: number;
+};
+
+export function TaskItem({ task, isDueToday, isCompletedToday, weeklyCompletedCount }: TaskItemProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -62,6 +75,7 @@ export function TaskItem({ task }: { task: Task }) {
             maxLength={TASK_NOTES_MAX_LENGTH}
             className="rounded-md border border-zinc-300 px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
           />
+          <RecurrenceFields defaultRecurrence={task.recurrence} />
           {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
           <div className="flex gap-2">
             <button
@@ -91,26 +105,37 @@ export function TaskItem({ task }: { task: Task }) {
     <li className="flex items-start gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
       <input
         type="checkbox"
-        checked={task.completed}
+        checked={isCompletedToday}
         onChange={handleToggle}
-        disabled={isPending}
+        disabled={isPending || !isDueToday}
         className="mt-1 h-4 w-4"
-        aria-label={`Mark "${task.title}" as ${task.completed ? "incomplete" : "complete"}`}
+        aria-label={
+          isDueToday
+            ? `Mark "${task.title}" as ${isCompletedToday ? "incomplete" : "complete"} for today`
+            : `"${task.title}" is not due today`
+        }
       />
       <div className="flex-1">
         <p
           className={
-            task.completed
+            isCompletedToday
               ? "text-sm font-medium text-zinc-400 line-through dark:text-zinc-600"
               : "text-sm font-medium text-zinc-900 dark:text-zinc-50"
           }
         >
           {task.title}
         </p>
+        {task.recurrence && (
+          <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+            {formatRecurrenceLabel(task.recurrence)}
+            {task.recurrence.type === "timesPerWeek" &&
+              ` · ${weeklyCompletedCount}/${task.recurrence.count} this week`}
+          </p>
+        )}
         {task.notes && (
           <p
             className={
-              task.completed
+              isCompletedToday
                 ? "mt-1 text-sm text-zinc-400 line-through dark:text-zinc-600"
                 : "mt-1 text-sm text-zinc-600 dark:text-zinc-400"
             }

@@ -1,9 +1,13 @@
-import { getTasks } from "@/lib/tasks";
+import { getTaskViewModels } from "@/lib/tasks";
 import { TaskForm } from "@/components/tasks/task-form";
 import { TaskList } from "@/components/tasks/task-list";
 
+// Due-state, today's completion, and weekly counts depend on the server
+// clock at request time — this page must not be statically cached.
+export const dynamic = "force-dynamic";
+
 export default function Home() {
-  const tasks = getTasks();
+  const tasks = getTaskViewModels();
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-4 py-12 sm:px-6">

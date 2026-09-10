@@ -3,11 +3,16 @@
 import { useRef, useState, useTransition, type FormEvent } from "react";
 import { createTaskAction } from "@/lib/task-actions";
 import { TASK_NOTES_MAX_LENGTH, TASK_TITLE_MAX_LENGTH } from "@/lib/task-types";
+import { RecurrenceFields } from "@/components/tasks/recurrence-fields";
 
 export function TaskForm() {
   const formRef = useRef<HTMLFormElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  // Bumped on successful submit to remount RecurrenceFields, since its
+  // internal "which recurrence type is selected" state isn't reset by the
+  // native form.reset() call below (reset() doesn't fire onChange).
+  const [recurrenceKey, setRecurrenceKey] = useState(0);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -21,6 +26,7 @@ export function TaskForm() {
       }
       setError(null);
       formRef.current?.reset();
+      setRecurrenceKey((key) => key + 1);
     });
   }
 
@@ -56,6 +62,7 @@ export function TaskForm() {
           className="rounded-md border border-zinc-300 px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
         />
       </div>
+      <RecurrenceFields key={recurrenceKey} />
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
       <button
         type="submit"
