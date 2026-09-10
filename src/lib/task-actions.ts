@@ -85,7 +85,9 @@ export async function createTaskAction(formData: FormData): Promise<TaskActionRe
   if ("error" in parsed) return { error: parsed.error };
 
   createTask(parsed);
+  // Weekly Overview also reads task data, so it must be invalidated too.
   revalidatePath("/");
+  revalidatePath("/weekly");
   return { error: null };
 }
 
@@ -99,7 +101,9 @@ export async function updateTaskAction(formData: FormData): Promise<TaskActionRe
   const updated = updateTask(id, parsed);
   if (!updated) return { error: "Task not found." };
 
+  // Weekly Overview also reads task data, so it must be invalidated too.
   revalidatePath("/");
+  revalidatePath("/weekly");
   return { error: null };
 }
 
@@ -108,7 +112,9 @@ export async function deleteTaskAction(formData: FormData): Promise<void> {
   if (!id) return;
 
   deleteTask(id);
+  // Weekly Overview also reads task data, so it must be invalidated too.
   revalidatePath("/");
+  revalidatePath("/weekly");
 }
 
 export async function toggleTaskAction(formData: FormData): Promise<void> {
