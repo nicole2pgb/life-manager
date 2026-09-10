@@ -1,19 +1,9 @@
 import { randomUUID } from "node:crypto";
+import type { Task } from "@/lib/task-types";
 
-export type Task = {
-  id: string;
-  title: string;
-  notes: string | null;
-  completed: boolean;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export const TASK_TITLE_MAX_LENGTH = 200;
-export const TASK_NOTES_MAX_LENGTH = 2000;
-
-// In-memory store. Persisted on `globalThis` so data survives Next.js dev
-// server hot reloads. Will be replaced by a real database later.
+// Server-only in-memory store. Persisted on `globalThis` so data survives
+// Next.js dev server hot reloads. Will be replaced by a real database later.
+// Do not import this module from client components.
 const globalForTasks = globalThis as unknown as { __tasks?: Task[] };
 const tasks: Task[] = globalForTasks.__tasks ?? (globalForTasks.__tasks = []);
 
@@ -48,11 +38,11 @@ export function updateTask(
   return task;
 }
 
-export function setTaskCompleted(id: string, completed: boolean): Task | null {
+export function toggleTaskCompleted(id: string): Task | null {
   const task = tasks.find((t) => t.id === id);
   if (!task) return null;
 
-  task.completed = completed;
+  task.completed = !task.completed;
   task.updatedAt = new Date().toISOString();
   return task;
 }

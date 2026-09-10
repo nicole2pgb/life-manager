@@ -1,4 +1,4 @@
-import type { Task } from "@/lib/tasks";
+import type { Task } from "@/lib/task-types";
 import { TaskItem } from "@/components/tasks/task-item";
 
 export function TaskList({ tasks }: { tasks: Task[] }) {

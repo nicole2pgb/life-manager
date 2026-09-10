@@ -2,7 +2,7 @@
 
 import { useRef, useState, useTransition } from "react";
 import { createTaskAction } from "@/lib/task-actions";
-import { TASK_NOTES_MAX_LENGTH, TASK_TITLE_MAX_LENGTH } from "@/lib/tasks";
+import { TASK_NOTES_MAX_LENGTH, TASK_TITLE_MAX_LENGTH } from "@/lib/task-types";
 
 export function TaskForm() {
   const formRef = useRef<HTMLFormElement>(null);

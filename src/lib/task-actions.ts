@@ -1,14 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import {
-  createTask,
-  deleteTask,
-  setTaskCompleted,
-  updateTask,
-  TASK_TITLE_MAX_LENGTH,
-  TASK_NOTES_MAX_LENGTH,
-} from "@/lib/tasks";
+import { createTask, deleteTask, toggleTaskCompleted, updateTask } from "@/lib/tasks";
+import { TASK_TITLE_MAX_LENGTH, TASK_NOTES_MAX_LENGTH } from "@/lib/task-types";
 
 export type TaskActionResult = { error: string | null };
 
@@ -64,9 +58,8 @@ export async function deleteTaskAction(formData: FormData): Promise<void> {
 
 export async function toggleTaskAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
-  const currentlyCompleted = formData.get("completed") === "true";
   if (!id) return;
 
-  setTaskCompleted(id, !currentlyCompleted);
+  toggleTaskCompleted(id);
   revalidatePath("/");
 }

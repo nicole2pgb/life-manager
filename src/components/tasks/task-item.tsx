@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import type { Task } from "@/lib/tasks";
-import { TASK_NOTES_MAX_LENGTH, TASK_TITLE_MAX_LENGTH } from "@/lib/tasks";
+import { TASK_NOTES_MAX_LENGTH, TASK_TITLE_MAX_LENGTH, type Task } from "@/lib/task-types";
 import { deleteTaskAction, toggleTaskAction, updateTaskAction } from "@/lib/task-actions";
 
 export function TaskItem({ task }: { task: Task }) {
@@ -13,7 +12,6 @@ export function TaskItem({ task }: { task: Task }) {
   function handleToggle() {
     const formData = new FormData();
     formData.set("id", task.id);
-    formData.set("completed", String(task.completed));
     startTransition(async () => {
       await toggleTaskAction(formData);
     });
@@ -47,6 +45,7 @@ export function TaskItem({ task }: { task: Task }) {
           <input
             name="title"
             type="text"
+            aria-label="Title"
             defaultValue={task.title}
             maxLength={TASK_TITLE_MAX_LENGTH}
             required
@@ -54,6 +53,7 @@ export function TaskItem({ task }: { task: Task }) {
           />
           <textarea
             name="notes"
+            aria-label="Notes"
             rows={2}
             defaultValue={task.notes ?? ""}
             maxLength={TASK_NOTES_MAX_LENGTH}
