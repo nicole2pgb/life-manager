@@ -10,7 +10,8 @@ Builds on: [requirements.md](../requirements.md) §3 (Weekly Overview) and [spec
 Weekly Overview is a **read-mostly, day-partitioned view** of the same tasks already managed on the Tasks page — it introduces no new task data, only a new way of laying existing tasks out across a Monday–Sunday week, plus the ability to complete/un-complete **today's** occurrence from within that layout. This spec covers:
 
 - A new page showing one Monday–Sunday week, one column (or section) per day.
-- Placing one-off tasks and each recurring type (`daily`, `weekdays`, `timesPerWeek`) onto the correct day(s), or into a week-level summary for `timesPerWeek`.
+- Placing each recurring type (`daily`, `weekdays`, `timesPerWeek`) onto the correct day(s), or into a week-level summary for `timesPerWeek`.
+- Listing incomplete one-off tasks once per week, in a separate "Open Tasks" section — never repeated across day columns (a one-off task has no due date, so it cannot be "placed" on a specific day).
 - Showing each occurrence's completed/incomplete state.
 - Navigating to the previous and next week.
 - Toggling completion for **today's** occurrence only, reusing the existing toggle action unchanged.
@@ -25,6 +26,7 @@ Explicitly out of scope for this feature:
 - Completing/un-completing any day other than today, in any week (past, current, or future). This was already a non-goal in specs/recurring-tasks.md and remains one here — the day-by-day layout makes more days *visible*, not more days *editable*.
 - Jumping to an arbitrary date/week (e.g. a date picker or "jump to month"). Only sequential previous/next navigation.
 - Drag-and-drop rescheduling, a "missed"/"overdue" visual state distinct from plain "incomplete", or any notification/reminder.
+- A record of completed one-off tasks anywhere in Weekly Overview. Once a one-off task is completed it simply stops appearing (see [Open Tasks](#open-tasks)); reviewing completed one-off tasks remains the Tasks page's job.
 - PostgreSQL and authentication (still deferred per requirements.md's Global Constraints).
 
 ## User Stories
@@ -39,11 +41,18 @@ Explicitly out of scope for this feature:
 This is the core ambiguity this spec resolves. Each task type is placed as follows:
 
 ### One-off tasks
-A one-off task (`recurrence === null`) has no due-date field — it never has, and this feature does not add one (see Non-Goals). It becomes relevant starting on the calendar day it was **created** on (`createdAt`'s calendar date, server-local), and how long it keeps appearing after that depends on `task.completed` — the same boolean already shown on the Tasks page, with no new field involved:
-- **While incomplete** (`task.completed === false`): it appears under **every day from its `createdAt` date onward** — today, every day already passed since creation, and every future day shown — the same "appears every day" pattern already used for `daily` recurrence, just starting from creation instead of always. It keeps appearing this way, in every subsequent week, for as long as it stays incomplete.
-- **Once completed** (`task.completed === true`): it stops being carried forward. It appears only once more, under its original `createdAt` day, shown as completed — it does not appear as an open task on any later day or in any later week.
-- It never appears on any day before its `createdAt` date, regardless of completed state.
-- Its completed state is `task.completed`, exactly as shown on the Tasks page — there is no per-day completion record for one-off tasks (unlike recurring tasks' `TaskCompletion` rows).
+A one-off task (`recurrence === null`) has no due-date field — it never has, and this feature does not add one (see Non-Goals). It **never appears in a day column** — placing it on a specific day would invent a due date it doesn't have, and would risk showing the same task up to seven times in one week. Instead:
+- **While incomplete** (`task.completed === false`): it appears exactly **once per week**, in a separate "Open Tasks" section (not tied to any day column), starting from the week that contains its `createdAt` date and continuing in every subsequent week for as long as it stays incomplete. Reusing the same `completed` boolean already shown on the Tasks page — no new field involved.
+- **Once completed** (`task.completed === true`): it is removed from Open Tasks entirely, in every week. It does not reappear anywhere else in Weekly Overview as a "completed" record — completed one-off tasks remain visible only on the Tasks page, which is unaffected by this feature.
+- It must never appear in a week that is entirely before its `createdAt` date (a week whose Sunday is earlier than the task's creation date).
+- See [Open Tasks](#open-tasks) below for the exact placement rule and interactivity.
+
+### Open Tasks
+A dedicated section of the page, separate from the 7 day columns, listing every currently-incomplete one-off task eligible for the displayed week — one entry per task, never one per day:
+- **Eligibility:** a task is included if `createdAt`'s calendar date is on or before the displayed week's Sunday (`weekEnd`) — i.e. the task existed by some point during or before this week — and `task.completed === false`. A week whose Sunday is earlier than the task's `createdAt` excludes it entirely, satisfying "must never appear before its creation date."
+- **Ordering:** same order as the rest of the app (`getTasks()`'s existing newest-created-first ordering) — no new sort is introduced.
+- **Interactivity:** the whole Open Tasks section's toggle controls are interactive only when the displayed week contains today — mirroring exactly how the `timesPerWeek` summary's interactivity is gated (see [Interactivity](#interactivity-only-today-is-ever-actionable)). Viewing a past or future week renders Open Tasks read-only. This is a deliberate extension of the "only today is actionable" principle to a task type that has no per-day granularity of its own — see Risks & Assumptions for the alternative that was considered and rejected.
+- Every entry is incomplete by construction (completed tasks are excluded, not shown-then-struck-through), so there is no separate "isCompleted" flag to track here — checking an item's box completes it and it disappears from Open Tasks on the next render, in every week.
 
 ### Daily tasks
 Appear under **every one of the 7 days** in the displayed week, provided the day's date is on or after the task's `createdAt` date (see [Creation-Date Cutoff](#creation-date-cutoff-applies-to-every-recurrence-type)). Each day's completion state is independent, driven by whether a `TaskCompletion` row exists for that exact date.
@@ -61,7 +70,7 @@ A task never appears — on any day, or in the `timesPerWeek` summary — for a 
 
 ## Completed vs. Incomplete Representation
 
-- **One-off task cell:** completed = `task.completed` (identical value/semantics as the Tasks page). Every day it appears on shows the same value, since there is a single global `completed` flag, not a per-day record — see [One-off tasks](#one-off-tasks) for which days it appears on.
+- **Open Tasks entry (one-off task):** every entry shown is incomplete by definition — the moment `task.completed` becomes `true` (via `task.completed`, identical semantics to the Tasks page), the task is simply omitted from Open Tasks rather than shown struck through. There is no "completed" visual state for one-off tasks in Weekly Overview at all — see [One-off tasks](#one-off-tasks) and [Open Tasks](#open-tasks).
 - **Daily / weekday task cell (a specific day):** completed = a `TaskCompletion` row exists for `{ taskId, occurrenceDate: thatDay }`. No distinction is made between "incomplete because it's in the past" and "incomplete because it hasn't happened yet" — both simply render as not completed. There is no third "missed" state.
 - **Times-per-week summary entry:** shows `completedCount/targetCount` for the displayed week (e.g. "2/3"), exactly like the existing single-page counter, just recomputed for whichever week is displayed instead of always "this week". Reaching or exceeding the target does not hide, disable, or otherwise change the entry (unchanged from specs/recurring-tasks.md) — the count keeps counting past the target (e.g. "4/3") without becoming an error state. Separately from that count, the entry's own toggle (interactive only when today falls within the displayed week) reflects whether **today specifically** has a completion — see [Times-per-week tasks](#times-per-week-tasks).
 
@@ -69,13 +78,13 @@ A task never appears — on any day, or in the `timesPerWeek` summary — for a 
 
 Every cell/entry in the grid is *visible* regardless of which week is displayed, but only the cell(s) corresponding to the **actual current server date** are interactive:
 
-- If the displayed week contains today, the single day-column for today has live, clickable completion controls for its one-off/daily/weekdays items, and the `timesPerWeek` summary row is also interactive (toggling still only ever affects today's date, exactly as in specs/recurring-tasks.md).
-- Every other day-column — whether in a past week, a future week, or a non-today day within the currently-displayed week — is **read-only**: no checkbox/button is rendered as clickable (or it is rendered `disabled`), consistent with the non-goal "no backfilling a past day, no completing a future day in advance."
+- If the displayed week contains today, the single day-column for today has live, clickable completion controls for its `daily`/`weekdays` items, and both the `timesPerWeek` summary row and the entire Open Tasks section are also interactive (toggling still only ever affects today's date — or, for Open Tasks, the task's single `completed` flag — exactly as in specs/recurring-tasks.md).
+- Every other day-column — whether in a past week, a future week, or a non-today day within the currently-displayed week — is **read-only**: no checkbox/button is rendered as clickable (or it is rendered `disabled`), consistent with the non-goal "no backfilling a past day, no completing a future day in advance." The same read-only rule applies to Open Tasks and the `timesPerWeek` summary whenever the displayed week does not contain today.
 - This requires no new server-side guard beyond what already exists: `toggleTaskOccurrence(id)` (in `src/lib/tasks.ts`) takes no date argument at all — it always acts on the server's current date regardless of what the client displays or sends. Weekly Overview reuses this action completely unchanged; the read-only rendering on non-today cells is a display-layer concern only, not a new authorization rule.
 
 ## One-Off Tasks
 
-Covered in [Which Tasks Appear on Which Days](#one-off-tasks) above. Restated for clarity: a one-off task becomes relevant on its `createdAt` date and, while incomplete, carries forward and appears on every day from then on (in every later day/week shown) until it is completed, at which point it collapses back to appearing only on its original `createdAt` day. It is otherwise identical in behavior to how it already works on the Tasks page (same `completed` flag, same toggle action, same edit/delete — though editing/deleting still only happens from the Tasks page per Non-Goals).
+Covered in [Which Tasks Appear on Which Days](#one-off-tasks) and [Open Tasks](#open-tasks) above. Restated for clarity: a one-off task never appears in a day column. While incomplete, it appears once per week in the Open Tasks section, starting from the week containing its `createdAt` date and continuing every week after until it's completed, at which point it disappears from Open Tasks (and from Weekly Overview generally) for good. It is otherwise identical in behavior to how it already works on the Tasks page (same `completed` flag, same toggle action, same edit/delete — though editing/deleting still only happens from the Tasks page per Non-Goals).
 
 ## Times-Per-Week Representation
 
@@ -114,7 +123,7 @@ export type DayColumn = {
 };
 
 export type WeeklyDayItem = {
-  task: Task;           // recurrence is null, "daily", or "weekdays" for day items
+  task: Task;           // recurrence is "daily" or "weekdays" for day items — one-off tasks never appear here
   isCompleted: boolean;
   isInteractive: boolean; // === isToday of the containing DayColumn
 };
@@ -127,28 +136,38 @@ export type WeeklyTimesPerWeekItem = {
   isCompletedToday: boolean; // whether today specifically has a TaskCompletion; only meaningful when isInteractive
 };
 
+// A one-off task that is still incomplete and eligible for the displayed
+// week. Every entry is incomplete by construction — completed one-off
+// tasks are simply absent, not shown-then-struck-through.
+export type WeeklyOpenTask = {
+  task: Task;             // recurrence === null, task.completed === false
+  isInteractive: boolean; // true only if the displayed week contains today
+};
+
 export type WeeklyOverview = {
   weekStart: string; // Monday, "YYYY-MM-DD"
   weekEnd: string;   // Sunday, "YYYY-MM-DD"
-  days: DayColumn[]; // exactly 7 entries, Monday..Sunday in order
+  days: DayColumn[]; // exactly 7 entries, Monday..Sunday in order — one-off tasks never appear in these
+  openTasks: WeeklyOpenTask[]; // incomplete one-off tasks, shown once per week, not per day
   timesPerWeekItems: WeeklyTimesPerWeekItem[];
 };
 ```
 
 **Suggested new server-only function** (for whoever implements this next — not created by this spec), alongside `getTaskViewModels` in `src/lib/tasks.ts`:
 
-- `getWeeklyOverview(anchorDate: Date): WeeklyOverview` — computes `getWeekRange(anchorDate)`, builds the 7 `DayColumn`s (filtering each task by recurrence type, due-day match, and the creation-date cutoff), and builds `timesPerWeekItems` the same way `getTaskViewModels` already computes `weeklyCompletedCount`, just parameterized by the requested week's range instead of always "this week". `isToday`/`isInteractive` flags are computed by comparing each column's `date` (or, for `timesPerWeekItems`, the displayed week's range) to `getTodayISODate(new Date())` — a single captured `now`, per the existing midnight-consistency rule already established for `getTaskViewModels` and `toggleTaskOccurrence`. `isCompletedToday` on a `WeeklyTimesPerWeekItem` is computed exactly as `TaskViewModel.isCompletedToday` already is on the Tasks page: whether a `TaskCompletion` exists for that same captured `now`'s date.
+- `getWeeklyOverview(anchorDate: Date): WeeklyOverview` — computes `getWeekRange(anchorDate)`, builds the 7 `DayColumn`s (filtering each task by recurrence type — one-off tasks excluded entirely — due-day match, and the creation-date cutoff), builds `openTasks` by filtering all one-off, incomplete tasks whose `createdAt` is on or before the week's `end`, and builds `timesPerWeekItems` the same way `getTaskViewModels` already computes `weeklyCompletedCount`, just parameterized by the requested week's range instead of always "this week". `isToday`/`isInteractive` flags are computed by comparing each column's `date` (or, for `timesPerWeekItems`/`openTasks`, the displayed week's range) to `getTodayISODate(new Date())` — a single captured `now`, per the existing midnight-consistency rule already established for `getTaskViewModels` and `toggleTaskOccurrence`. `isCompletedToday` on a `WeeklyTimesPerWeekItem` is computed exactly as `TaskViewModel.isCompletedToday` already is on the Tasks page: whether a `TaskCompletion` exists for that same captured `now`'s date.
 
 ## Functional Requirements
 
-- FR1: A new page (suggested route: `/weekly`) displays one Monday–Sunday week as 7 day columns/sections plus one `timesPerWeek` summary section, without altering the existing Tasks page at `/`.
-- FR2: Each day column shows: any one-off task that is either still incomplete (for every date on or after its `createdAt`) or completed with its `createdAt` exactly matching that date, plus any `daily`/`weekdays` task due on that date (subject to the creation-date cutoff).
-- FR3: `timesPerWeek` tasks appear once, in the summary section, never inside a day column (FR3.3 in requirements.md).
-- FR4: Every item shows a completed/incomplete state per [Completed vs. Incomplete Representation](#completed-vs-incomplete-representation).
-- FR5: Only items on the day matching the server's actual current date (and, for `timesPerWeek`, only when the displayed week contains today) are interactive; toggling calls the existing `toggleTaskAction`/`toggleTaskOccurrence` unchanged, with no new parameters.
-- FR6: "Previous week" and "next week" controls navigate via the `week` search parameter as described above; navigating never mutates any task or completion data (FR3.6 in requirements.md).
-- FR7: A week with no applicable tasks on any day and no `timesPerWeek` tasks shows an empty-state message, not an error.
-- FR8: Deleting a task on the Tasks page removes it from every week's Weekly Overview immediately (no separate cleanup needed — the view is always computed fresh from current data, consistent with `dynamic = "force-dynamic"` already used on `/`).
+- FR1: A new page (suggested route: `/weekly`) displays one Monday–Sunday week as 7 day columns/sections, one Open Tasks section, and one `timesPerWeek` summary section, without altering the existing Tasks page at `/`.
+- FR2: Each day column shows only `daily`/`weekdays` tasks due on that date (subject to the creation-date cutoff). One-off tasks never appear in a day column, under any circumstance.
+- FR3: Incomplete one-off tasks appear once per week in the Open Tasks section (never once per day), starting from the week containing their `createdAt` date and continuing every week until completed; a completed one-off task does not appear in Open Tasks, or anywhere else in Weekly Overview.
+- FR4: `timesPerWeek` tasks appear once, in the summary section, never inside a day column (FR3.3 in requirements.md).
+- FR5: Every item shows a completed/incomplete state per [Completed vs. Incomplete Representation](#completed-vs-incomplete-representation).
+- FR6: Only items on the day matching the server's actual current date (and, for `timesPerWeek` and Open Tasks, only when the displayed week contains today) are interactive; toggling calls the existing `toggleTaskAction`/`toggleTaskOccurrence` unchanged, with no new parameters.
+- FR7: "Previous week" and "next week" controls navigate via the `week` search parameter as described above; navigating never mutates any task or completion data (FR3.6 in requirements.md).
+- FR8: A week with no applicable tasks on any day, no open one-off tasks, and no `timesPerWeek` tasks shows an empty-state message, not an error.
+- FR9: Deleting a task on the Tasks page removes it from every week's Weekly Overview immediately (no separate cleanup needed — the view is always computed fresh from current data, consistent with `dynamic = "force-dynamic"` already used on `/`).
 
 ## Acceptance Criteria
 
@@ -160,28 +179,36 @@ Scenario: View the current week
   And "Take vitamins" appears under all 7 days
   And "English" appears only under Monday and Thursday
 
-Scenario: Incomplete one-off task placement on creation day
+Scenario: Incomplete one-off task appears once in Open Tasks, not in any day column
   Given I created an incomplete one-off task "Buy groceries" today
   When I view the current week's Weekly Overview
-  Then "Buy groceries" appears under today's column
-  And it does not appear under any day before today
+  Then "Buy groceries" appears once, in the Open Tasks section
+  And it does not appear under any day column, including today's
 
-Scenario: Incomplete one-off task carries forward into future days and weeks
+Scenario: Incomplete one-off task carries forward into future weeks via Open Tasks
   Given I created an incomplete one-off task "Buy groceries" today and it is still incomplete
   When I navigate to next week's Weekly Overview
-  Then "Buy groceries" still appears, under every day of next week
-  And it continues to appear in every later week until it is completed
+  Then "Buy groceries" still appears once in that week's Open Tasks section
+  And it continues to appear in every later week's Open Tasks until it is completed
 
-Scenario: Completing a one-off task stops it from carrying forward
-  Given "Buy groceries" was created last Monday and has been carrying forward as incomplete ever since
+Scenario: Completing a one-off task removes it from Open Tasks entirely
+  Given "Buy groceries" was created last Monday and has been appearing in Open Tasks ever since
   When I mark it complete
-  Then it no longer appears under today or any future day/week
-  And it still appears, as completed, under last Monday (its `createdAt` day) if that week is viewed
+  Then it no longer appears in Open Tasks for the current week
+  And it no longer appears in Open Tasks for last Monday's week either
+  And it does not appear anywhere else in Weekly Overview as a completed item
 
-Scenario: One-off task never appears before its creation date
+Scenario: One-off task never appears in a week entirely before its creation date
   Given I created a one-off task "Buy groceries" today
   When I navigate to the previous week's Weekly Overview
-  Then "Buy groceries" does not appear anywhere in that week
+  Then "Buy groceries" does not appear in that week's Open Tasks section
+  And it does not appear anywhere else in that week
+
+Scenario: Open Tasks is read-only outside the current week
+  Given "Buy groceries" is incomplete and appears in Open Tasks
+  When I view a week other than the current week
+  Then "Buy groceries" still appears in that week's Open Tasks section
+  And its toggle control is disabled (read-only)
 
 Scenario: Times-per-week task shown once, not per day
   Given "Gym" is set to 3 times per week with 2 completions so far this week
@@ -254,10 +281,10 @@ Scenario: Deleted task disappears from Weekly Overview
 
 - A `weekdays` task due on a day that has already passed this week (e.g. it's Wednesday and the task was due Monday but not completed) shows as incomplete on Monday's column — not specially flagged as "missed" (see Non-Goals).
 - A task's recurrence rule can be edited on the Tasks page at any time; Weekly Overview always reflects the *current* rule for every day shown, including past days — it does not reconstruct what the rule used to be on a given historical day. (This mirrors how `TaskCompletion` history is already decoupled from the current rule in specs/recurring-tasks.md — only completion *records* are historical, the recurrence *rule* itself is not versioned.)
-- If a task was recurring in the past but recurrence was later removed (making it one-off), past weeks in Weekly Overview show it only under its `createdAt` day (as a one-off task), not under its old recurring days — because "is this task currently one-off or recurring" is likewise not versioned; only completion history is preserved (consistent with specs/recurring-tasks.md's "Removing recurrence from a task" scenario).
+- If a task was recurring in the past but recurrence was later removed (making it one-off), past weeks in Weekly Overview stop showing it under its old recurring days and instead show it (if still incomplete) in that week's Open Tasks section — because "is this task currently one-off or recurring" is not versioned; only completion history is preserved (consistent with specs/recurring-tasks.md's "Removing recurrence from a task" scenario). Conversely, a task that gains recurrence after being one-off stops appearing in Open Tasks and starts appearing in day columns instead, for every week from then on.
 - Viewing a week far in the past or future works the same way arithmetically (±7 days per navigation click) — there is no minimum/maximum navigable range in MVP.
 - A task created "today" that is `weekdays`-recurring but not due today still correctly appears later in the same week on its actual due day(s) (the creation-date cutoff only excludes days *before* creation, not days after it within the same week).
-- Because a one-off task has a single global `completed` flag rather than a per-day record, an incomplete one-off task's carry-forward is evaluated from its *current* state, not a historical snapshot: navigating back to a past week that falls between its `createdAt` date and today will show it as still-open in that past week too, for as long as it remains incomplete right now. The moment it's completed, it retroactively disappears from every one of those past weeks except its original `createdAt` day. This differs from recurring tasks, whose `TaskCompletion` rows are genuinely per-date and immutable history — one-off task placement in past weeks is a live reflection of current state, not a historical record.
+- Because a one-off task has a single global `completed` flag rather than a per-day record, its presence in Open Tasks is evaluated from its *current* state, not a historical snapshot: navigating back to a past week that falls on or after its `createdAt` date will show it in that past week's Open Tasks too, for as long as it remains incomplete right now. The moment it's completed, it disappears from Open Tasks in every one of those past weeks simultaneously — there is no week-by-week memory of "was it open when I looked last time." This differs from recurring tasks, whose `TaskCompletion` rows are genuinely per-date and immutable history — one-off task placement in Open Tasks is a live reflection of current state, not a historical record.
 
 ## Validation Rules
 
@@ -266,11 +293,12 @@ Scenario: Deleted task disappears from Weekly Overview
 
 ## Risks & Assumptions
 
-- **Assumption:** One-off tasks become relevant on their `createdAt` date and, while incomplete, carry forward and appear on every subsequent day/week until completed — at which point they collapse back to appearing only on their `createdAt` day. This is the most consequential judgment call in this spec, since requirements.md itself was ambiguous here ("one-off tasks due that day (none, unless explicitly scheduled)"). It deliberately reuses only the existing `completed` boolean and `createdAt` date — no due date, deadline, or new scheduling field was introduced. The direct consequence is that one-off task placement in past weeks is a live reflection of *current* completion state rather than immutable history (see the matching Edge Case above) — accepted here as a reasonable MVP trade-off rather than adding a `completedAt`/per-day record.
+- **Assumption:** One-off tasks never appear in a day column — they'd have no real due date to be placed on, and repeating the same task across all 7 days was explicitly rejected as confusing and redundant. Instead, incomplete one-off tasks appear once per week in a dedicated Open Tasks section, from the week containing their `createdAt` date until completed, at which point they disappear from Weekly Overview entirely (not just from Open Tasks — there is no "completed" one-off display anywhere in this feature; that remains the Tasks page's job). This supersedes an earlier version of this spec, which placed one-off tasks in every day column while incomplete — that approach is what created the "same task shown seven times a week" problem this revision fixes. It still deliberately reuses only the existing `completed` boolean and `createdAt` date — no due date, deadline, or new scheduling field was introduced. The direct consequence is that Open Tasks membership in past weeks is a live reflection of *current* completion state rather than immutable history (see the matching Edge Case above) — accepted here as a reasonable MVP trade-off rather than adding a `completedAt`/per-day record.
+- **Assumption:** The Open Tasks section's toggle is interactive only when the displayed week contains today, exactly mirroring how the `timesPerWeek` summary is gated. This was a genuine judgment call: since a one-off task's `completed` flag isn't tied to any date at all, completing it from a past or future week's Open Tasks view wouldn't actually "backfill" or "pre-complete" anything the way toggling a specific day's occurrence would — the Tasks page itself lets you complete a one-off task unconditionally, any time. The alternative (always interactive, regardless of displayed week) was rejected in favor of keeping one consistent rule across the whole page ("this page is read-only unless you're looking at the current week") rather than a task-type-specific exception, per this spec's explicit instruction to leave "today-only interactivity" unchanged. Worth revisiting if it turns out to be confusing in practice.
 - **Assumption:** The creation-date cutoff (tasks never appear before their `createdAt` date) is enforced uniformly for all recurrence types, even though the existing implementation never needed this check before (it only ever looked at "today"). This is new logic the implementer must add, not something already covered by `getTaskViewModels`.
 - **Risk:** Because Weekly Overview can render many days/weeks of historical and future state, it's tempting to also add a mini progress summary per day or per week "for free" — this must be resisted; any such aggregate belongs to the separate Progress Tracking feature (requirements.md §4) and reusing its future `getOccurrencesForWeek`-style computation, not duplicating it here.
 - **Risk:** Reusing `getWeekRange` for an arbitrary anchor date (not just "now") is straightforward since the function already takes a `date: Date` argument — but the implementer must not accidentally call the "now"-only helpers (`getTodayISODate`, `getWeekday`) with the *displayed* week's date when they actually need the *real* current date (e.g. for computing `isToday`/`isInteractive`). Both the anchor date and the real "now" are needed simultaneously in `getWeeklyOverview`, and conflating them would silently break interactivity gating.
 
 ## Open Questions
 
-None — the one genuinely ambiguous point in requirements.md (how one-off tasks fit into a day-partitioned week) has been resolved explicitly above as an assumption — incomplete one-off tasks carry forward from their `createdAt` date until completed, then collapse back to their creation day — with its trade-offs recorded, rather than left open.
+None — the one genuinely ambiguous point in requirements.md (how one-off tasks fit into a day-partitioned week) has been resolved explicitly above as an assumption — incomplete one-off tasks appear once per week in a dedicated Open Tasks section, never repeated across day columns, until completed — with its trade-offs recorded, rather than left open.

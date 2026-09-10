@@ -1,6 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { RecurrenceRule, Task, TaskCompletion, TaskViewModel } from "@/lib/task-types";
-import { getTodayISODate, getWeekday, getWeekRange, isDueOn } from "@/lib/recurrence";
+import type {
+  DayColumn,
+  RecurrenceRule,
+  Task,
+  TaskCompletion,
+  TaskViewModel,
+  WeeklyDayItem,
+  WeeklyOpenTask,
+  WeeklyOverview,
+  WeeklyTimesPerWeekItem,
+} from "@/lib/task-types";
+import { formatISODate, getTodayISODate, getWeekday, getWeekRange, isDueOn } from "@/lib/recurrence";
 
 // Server-only in-memory store. Persisted on `globalThis` so data survives
 // Next.js dev server hot reloads. Will be replaced by a real database later.
@@ -152,4 +162,89 @@ export function getTaskViewModels(): TaskViewModel[] {
 
     return { task, isDueToday, isCompletedToday, weeklyCompletedCount };
   });
+}
+
+// Builds the Monday-Sunday week containing `anchorDate` for the Weekly
+// Overview page — see specs/weekly-overview.md. `anchorDate` picks *which*
+// week to show; "today"/"now" for due-ness and interactivity is always the
+// real current instant, captured separately, regardless of which week is
+// being displayed.
+export function getWeeklyOverview(anchorDate: Date): WeeklyOverview {
+  const now = new Date();
+  const todayISO = getTodayISODate(now);
+  const { start, end, startDate } = getWeekRange(anchorDate);
+  const weekContainsToday = todayISO >= start && todayISO <= end;
+  const allTasks = getTasks();
+
+  const days: DayColumn[] = [];
+  for (let i = 0; i < 7; i++) {
+    const date = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + i);
+    const dateISO = formatISODate(date);
+    const weekday = getWeekday(date);
+    const isToday = dateISO === todayISO;
+
+    const items: WeeklyDayItem[] = [];
+    for (const task of allTasks) {
+      // One-off tasks never appear in a day column — see the `openTasks`
+      // section built below — only recurring tasks are placed per day.
+      if (task.recurrence === null) continue;
+
+      const createdDateISO = formatISODate(new Date(task.createdAt));
+      if (dateISO < createdDateISO) continue;
+
+      if (task.recurrence.type === "timesPerWeek") {
+        continue; // shown once in the weekly summary, not per day
+      }
+
+      if (!isDueOn(task.recurrence, weekday)) continue;
+
+      const isCompleted = getCompletionsForTask(task.id).some(
+        (c) => c.occurrenceDate === dateISO,
+      );
+      items.push({ task, isCompleted, isInteractive: isToday });
+    }
+
+    days.push({ date: dateISO, weekday, isToday, items });
+  }
+
+  const timesPerWeekItems: WeeklyTimesPerWeekItem[] = [];
+  for (const task of allTasks) {
+    if (!task.recurrence || task.recurrence.type !== "timesPerWeek") continue;
+
+    const createdDateISO = formatISODate(new Date(task.createdAt));
+    if (createdDateISO > end) continue;
+
+    const taskCompletions = getCompletionsForTask(task.id);
+    const completedCount = new Set(
+      taskCompletions
+        .filter((c) => c.occurrenceDate >= start && c.occurrenceDate <= end)
+        .map((c) => c.occurrenceDate),
+    ).size;
+    const isCompletedToday =
+      weekContainsToday && taskCompletions.some((c) => c.occurrenceDate === todayISO);
+
+    timesPerWeekItems.push({
+      task,
+      completedCount,
+      targetCount: task.recurrence.count,
+      isInteractive: weekContainsToday,
+      isCompletedToday,
+    });
+  }
+
+  // Incomplete one-off tasks: shown once per week (not once per day), from
+  // their createdAt date onward, until completed — see specs/weekly-overview.md
+  // "Open Tasks". A week that ends before the task's createdAt date excludes
+  // it entirely (it didn't exist yet during any part of that week).
+  const openTasks: WeeklyOpenTask[] = [];
+  for (const task of allTasks) {
+    if (task.recurrence !== null || task.completed) continue;
+
+    const createdDateISO = formatISODate(new Date(task.createdAt));
+    if (createdDateISO > end) continue;
+
+    openTasks.push({ task, isInteractive: weekContainsToday });
+  }
+
+  return { weekStart: start, weekEnd: end, days, openTasks, timesPerWeekItems };
 }
