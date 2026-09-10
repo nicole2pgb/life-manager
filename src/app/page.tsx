@@ -2,6 +2,10 @@ import { getTaskViewModels } from "@/lib/tasks";
 import { TaskForm } from "@/components/tasks/task-form";
 import { TaskList } from "@/components/tasks/task-list";
 
+// Due-state, today's completion, and weekly counts depend on the server
+// clock at request time — this page must not be statically cached.
+export const dynamic = "force-dynamic";
+
 export default function Home() {
   const tasks = getTaskViewModels();
 

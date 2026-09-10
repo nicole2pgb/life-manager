@@ -13,6 +13,15 @@ const tasks: Task[] = globalForTasks.__tasks ?? (globalForTasks.__tasks = []);
 const completions: TaskCompletion[] =
   globalForTasks.__taskCompletions ?? (globalForTasks.__taskCompletions = []);
 
+// Tasks created before `recurrence` existed (surviving a dev hot reload in
+// the shared global array) won't have the field at all. Normalize them in
+// place, once, so every task recurrence logic reads is `RecurrenceRule | null`.
+for (const task of tasks) {
+  if (task.recurrence === undefined) {
+    task.recurrence = null;
+  }
+}
+
 export function getTasks(): Task[] {
   return [...tasks].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
