@@ -8,6 +8,7 @@ import type {
   WeeklyDayItem,
   WeeklyOpenTask,
   WeeklyOverview,
+  WeeklyProgress,
   WeeklyTimesPerWeekItem,
 } from "@/lib/task-types";
 import { formatISODate, getTodayISODate, getWeekday, getWeekRange, isDueOn } from "@/lib/recurrence";
@@ -23,12 +24,15 @@ const tasks: Task[] = globalForTasks.__tasks ?? (globalForTasks.__tasks = []);
 const completions: TaskCompletion[] =
   globalForTasks.__taskCompletions ?? (globalForTasks.__taskCompletions = []);
 
-// Tasks created before `recurrence` existed (surviving a dev hot reload in
-// the shared global array) won't have the field at all. Normalize them in
-// place, once, so every task recurrence logic reads is `RecurrenceRule | null`.
+// Tasks created before `recurrence`/`completedAt` existed (surviving a dev
+// hot reload in the shared global array) won't have those fields at all.
+// Normalize them in place, once, so recurrence logic never reads `undefined`.
 for (const task of tasks) {
   if (task.recurrence === undefined) {
     task.recurrence = null;
+  }
+  if (task.completedAt === undefined) {
+    task.completedAt = null;
   }
 }
 
@@ -47,6 +51,7 @@ export function createTask(input: {
     title: input.title,
     notes: input.notes,
     completed: false,
+    completedAt: null,
     recurrence: input.recurrence,
     createdAt: now,
     updatedAt: now,
@@ -71,6 +76,7 @@ export function updateTask(
   task.recurrence = input.recurrence;
   if (isRemovingRecurrence) {
     task.completed = false;
+    task.completedAt = null;
   }
   task.updatedAt = new Date().toISOString();
   return task;
@@ -90,10 +96,11 @@ export function getCompletionsForTask(taskId: string): TaskCompletion[] {
 }
 
 // Toggles a task's occurrence for *today*, server-side. For a one-off task
-// this flips `completed`; for a recurring task it toggles today's
-// TaskCompletion row. A `weekdays` task not due today is rejected (no-op)
-// even if called directly, since the client's UI disabling it is not
-// sufficient on its own.
+// this flips `completed` (and sets/clears `completedAt` to match — see
+// specs/task-progress.md); for a recurring task it toggles today's
+// TaskCompletion row and never touches `completedAt`. A `weekdays` task not
+// due today is rejected (no-op) even if called directly, since the client's
+// UI disabling it is not sufficient on its own.
 export function toggleTaskOccurrence(id: string): Task | null {
   const task = tasks.find((t) => t.id === id);
   if (!task) return null;
@@ -105,6 +112,7 @@ export function toggleTaskOccurrence(id: string): Task | null {
 
   if (task.recurrence === null) {
     task.completed = !task.completed;
+    task.completedAt = task.completed ? now.toISOString() : null;
     task.updatedAt = now.toISOString();
     return task;
   }
@@ -249,4 +257,50 @@ export function getWeeklyOverview(anchorDate: Date, now: Date): WeeklyOverview {
   }
 
   return { weekStart: start, weekEnd: end, days, openTasks, timesPerWeekItems };
+}
+
+// Computes the real current week's progress — see specs/task-progress.md.
+// Takes only `now` (no anchor date): it always computes the week containing
+// `now`, so it can never be made to show a different, navigated week by
+// mistake. Reuses `getWeeklyOverview(now, now)` for everything except the
+// one-off-task count, rather than re-deriving due-date/eligibility logic.
+export function getWeeklyProgress(now: Date): WeeklyProgress {
+  const overview = getWeeklyOverview(now, now);
+
+  let planned = 0;
+  let completed = 0;
+
+  for (const day of overview.days) {
+    planned += day.items.length;
+    completed += day.items.filter((item) => item.isCompleted).length;
+  }
+
+  for (const item of overview.timesPerWeekItems) {
+    planned += item.targetCount;
+    completed += item.completedCount;
+  }
+
+  // One-off tasks: still open ones are the same set Weekly Overview's Open
+  // Tasks shows for this week (always eligible — see specs/task-progress.md
+  // for why no createdAt check is needed here). A task completed this week
+  // (by completedAt) counts as both planned and completed; one completed in
+  // an earlier week contributes nothing.
+  for (const task of getTasks()) {
+    if (task.recurrence !== null) continue;
+
+    if (!task.completed) {
+      planned += 1;
+      continue;
+    }
+
+    if (task.completedAt === null) continue;
+
+    const completedDateISO = formatISODate(new Date(task.completedAt));
+    if (completedDateISO >= overview.weekStart && completedDateISO <= overview.weekEnd) {
+      planned += 1;
+      completed += 1;
+    }
+  }
+
+  return { weekStart: overview.weekStart, weekEnd: overview.weekEnd, planned, completed };
 }

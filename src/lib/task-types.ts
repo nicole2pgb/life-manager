@@ -10,6 +10,7 @@ export type Task = {
   title: string;
   notes: string | null;
   completed: boolean; // meaningful only when recurrence is null
+  completedAt: string | null; // meaningful only when recurrence is null — see specs/task-progress.md
   recurrence: RecurrenceRule | null; // null = one-off task
   createdAt: string;
   updatedAt: string;
@@ -67,6 +68,15 @@ export type WeeklyOverview = {
   days: DayColumn[]; // exactly 7 entries, Monday..Sunday in order — one-off tasks never appear in these
   openTasks: WeeklyOpenTask[]; // incomplete one-off tasks, shown once per week, not per day
   timesPerWeekItems: WeeklyTimesPerWeekItem[];
+};
+
+// See specs/task-progress.md. Always computed for the real current week —
+// independent of whichever week Weekly Overview is currently navigated to.
+export type WeeklyProgress = {
+  weekStart: string; // Monday, "YYYY-MM-DD" — always the real current week
+  weekEnd: string; // Sunday, "YYYY-MM-DD"
+  completed: number;
+  planned: number; // 0 means "nothing planned this week" — render the neutral state
 };
 
 export const TASK_TITLE_MAX_LENGTH = 200;

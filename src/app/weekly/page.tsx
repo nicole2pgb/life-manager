@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getWeeklyOverview } from "@/lib/tasks";
+import { getWeeklyOverview, getWeeklyProgress } from "@/lib/tasks";
 import { formatISODate, parseISODate } from "@/lib/recurrence";
 import { WEEKDAY_LABELS } from "@/lib/task-types";
 import { WeeklyToggle } from "@/components/weekly/weekly-toggle";
@@ -23,6 +23,12 @@ export default async function WeeklyPage({
   const now = new Date();
   const anchorDate = (week && parseISODate(week)) || now;
   const overview = getWeeklyOverview(anchorDate, now);
+  // Always the real current week, independent of `anchorDate`/`week` above —
+  // see specs/task-progress.md. Deliberately not derived from `overview`,
+  // since that reflects whichever week is being navigated to.
+  const progress = getWeeklyProgress(now);
+  const progressPercentage =
+    progress.planned === 0 ? null : Math.round((progress.completed / progress.planned) * 100);
 
   const weekStartDate = parseISODate(overview.weekStart) as Date;
   const prevWeekDate = new Date(
@@ -73,6 +79,28 @@ export default async function WeeklyPage({
           </Link>
         </div>
       </header>
+
+      <section className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+        <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">This week&apos;s progress</h2>
+        {progress.planned === 0 ? (
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">No tasks planned this week.</p>
+        ) : (
+          <>
+            <p className="text-sm text-zinc-900 dark:text-zinc-50">
+              {progress.completed}/{progress.planned} this week
+              {progressPercentage !== null && (
+                <span className="text-zinc-500 dark:text-zinc-400"> ({progressPercentage}%)</span>
+              )}
+            </p>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+              <div
+                className="h-full rounded-full bg-zinc-900 dark:bg-zinc-50"
+                style={{ width: `${Math.min(100, progressPercentage ?? 0)}%` }}
+              />
+            </div>
+          </>
+        )}
+      </section>
 
       {isEmpty ? (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">No tasks in this week.</p>
