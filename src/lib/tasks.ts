@@ -70,12 +70,17 @@ export function updateTask(
   // Removing recurrence turns the task back into a one-off task: its
   // `completed` flag was inert while recurring, so it starts fresh.
   const isRemovingRecurrence = task.recurrence !== null && input.recurrence === null;
+  // Gaining recurrence: `completedAt` is meaningful only for one-off tasks
+  // (see specs/task-progress.md), so it must not carry a stale value forward.
+  const isGainingRecurrence = task.recurrence === null && input.recurrence !== null;
 
   task.title = input.title;
   task.notes = input.notes;
   task.recurrence = input.recurrence;
   if (isRemovingRecurrence) {
     task.completed = false;
+    task.completedAt = null;
+  } else if (isGainingRecurrence) {
     task.completedAt = null;
   }
   task.updatedAt = new Date().toISOString();
