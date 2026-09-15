@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getWeeklyOverview, getWeeklyProgress } from "@/lib/tasks";
+import { getWeeklyPageData } from "@/lib/tasks";
 import { formatISODate, parseISODate } from "@/lib/recurrence";
 import { WEEKDAY_LABELS } from "@/lib/task-types";
 import { WeeklyToggle } from "@/components/weekly/weekly-toggle";
@@ -22,11 +22,13 @@ export default async function WeeklyPage({
   // disagree if a request happens to straddle midnight.
   const now = new Date();
   const anchorDate = (week && parseISODate(week)) || now;
-  const overview = getWeeklyOverview(anchorDate, now);
-  // Always the real current week, independent of `anchorDate`/`week` above —
-  // see specs/task-progress.md. Deliberately not derived from `overview`,
-  // since that reflects whichever week is being navigated to.
-  const progress = getWeeklyProgress(now);
+  // One consistent read for both: `overview` follows `anchorDate` (the
+  // navigated week), `progress` always uses the real current week
+  // internally regardless of it — see specs/task-progress.md. Fetching both
+  // from a single snapshot (rather than two separate calls) means a
+  // mutation landing in between can't make the grid and the progress
+  // summary disagree about the database's state within one render.
+  const { overview, progress } = await getWeeklyPageData(anchorDate, now);
   const progressPercentage =
     progress.planned === 0 ? null : Math.round((progress.completed / progress.planned) * 100);
 
