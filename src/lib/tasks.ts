@@ -364,15 +364,18 @@ export async function getWeeklyOverview(anchorDate: Date, now: Date): Promise<We
   return buildWeeklyOverview(anchorDate, now, allTasks, allCompletions);
 }
 
-// Computes the real current week's progress — see specs/task-progress.md.
-// Takes only `now` (no anchor date): it always computes the week containing
-// `now`, so it can never be made to show a different, navigated week by
-// mistake. Fetches one task/completion snapshot and reuses it for both the
-// underlying week overview and its own one-off-task pass below, rather than
-// querying tasks a second time (and rather than re-deriving due-date/
-// eligibility logic, which stays in buildWeeklyOverview).
-export async function getWeeklyProgress(now: Date): Promise<WeeklyProgress> {
-  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot();
+// Pure (no I/O): computes the real current week's progress from an
+// already-fetched `allTasks`/`allCompletions` snapshot — see
+// specs/task-progress.md. Always uses `now, now` for the underlying
+// overview (progress is never scoped to a navigated week), regardless of
+// what week `allTasks`/`allCompletions` might otherwise be reused for by a
+// caller. Split out for the same reason as buildWeeklyOverview: so a single
+// snapshot can be reused by more than one derived view without re-querying.
+function buildWeeklyProgress(
+  now: Date,
+  allTasks: Task[],
+  allCompletions: TaskCompletion[],
+): WeeklyProgress {
   const overview = buildWeeklyOverview(now, now, allTasks, allCompletions);
 
   let planned = 0;
@@ -412,4 +415,36 @@ export async function getWeeklyProgress(now: Date): Promise<WeeklyProgress> {
   }
 
   return { weekStart: overview.weekStart, weekEnd: overview.weekEnd, planned, completed };
+}
+
+// Computes the real current week's progress — see specs/task-progress.md.
+// Takes only `now` (no anchor date): it always computes the week containing
+// `now`, so it can never be made to show a different, navigated week by
+// mistake. Fetches one task/completion snapshot and reuses it for both the
+// underlying week overview and the one-off-task pass in buildWeeklyProgress,
+// rather than querying tasks a second time.
+export async function getWeeklyProgress(now: Date): Promise<WeeklyProgress> {
+  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot();
+  return buildWeeklyProgress(now, allTasks, allCompletions);
+}
+
+// Single consistent snapshot for the Weekly Overview page, which needs both
+// the navigated-week overview and the always-real-current-week progress in
+// one render (see specs/weekly-overview.md and specs/task-progress.md).
+// Fetching one snapshot and building both from it — instead of calling
+// getWeeklyOverview and getWeeklyProgress separately, each with its own
+// snapshot — means a mutation landing between two page-render reads can no
+// longer make the grid and the progress summary disagree about the
+// database's state at that moment. The navigated-vs-current-week
+// distinction between the two is unchanged: `overview` still follows
+// `anchorDate`, `progress` still always uses `now, now` internally.
+export async function getWeeklyPageData(
+  anchorDate: Date,
+  now: Date,
+): Promise<{ overview: WeeklyOverview; progress: WeeklyProgress }> {
+  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot();
+  return {
+    overview: buildWeeklyOverview(anchorDate, now, allTasks, allCompletions),
+    progress: buildWeeklyProgress(now, allTasks, allCompletions),
+  };
 }
