@@ -8,6 +8,20 @@
       "when": 1789126614199,
       "tag": "0000_zippy_toad_men",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1789478269960,
+      "tag": "0001_ensure_innodb_engine",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1789479840141,
+      "tag": "0002_datetime_millisecond_precision",
+      "breakpoints": true
     }
   ]
 }

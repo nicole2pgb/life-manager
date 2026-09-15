@@ -47,13 +47,27 @@ function rowToTaskCompletion(row: TaskCompletionRow): TaskCompletion {
   };
 }
 
-// Bulk-use only (internal): fetches every completion once so callers that
-// need to look completions up per-task (getTaskViewModels, getWeeklyOverview,
-// getWeeklyProgress) can filter in memory instead of issuing one query per
-// task — the same shape of work the in-memory array did implicitly.
-async function getAllCompletions(): Promise<TaskCompletion[]> {
-  const rows = await db.select().from(taskCompletionsTable);
-  return rows.map(rowToTaskCompletion);
+// Bulk-use only (internal): fetches every task and every completion as one
+// consistent snapshot, so callers that derive a single view from both
+// tables (getTaskViewModels, getWeeklyOverview, getWeeklyProgress) can't
+// observe a task list and a completion list that reflect different points
+// in time — e.g. a task deleted (cascading its completions) by another
+// request landing in the gap between two separate, unsynchronized queries.
+// A transaction is sufficient for this (InnoDB's default REPEATABLE READ
+// isolation gives every read inside one transaction the same snapshot) —
+// no row locking is needed since this is read-only.
+async function getTasksAndCompletionsSnapshot(): Promise<{
+  tasks: Task[];
+  completions: TaskCompletion[];
+}> {
+  return db.transaction(async (tx) => {
+    const taskRows = await tx.select().from(tasksTable).orderBy(desc(tasksTable.createdAt));
+    const completionRows = await tx.select().from(taskCompletionsTable);
+    return {
+      tasks: taskRows.map(rowToTask),
+      completions: completionRows.map(rowToTaskCompletion),
+    };
+  });
 }
 
 function completionsFor(allCompletions: TaskCompletion[], taskId: string): TaskCompletion[] {
@@ -219,8 +233,7 @@ export async function getTaskViewModels(): Promise<TaskViewModel[]> {
   const todayWeekday = getWeekday(now);
   const { start, end } = getWeekRange(now);
 
-  const allTasks = await getTasks();
-  const allCompletions = await getAllCompletions();
+  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot();
 
   return allTasks.map((task) => {
     if (task.recurrence === null) {
@@ -246,20 +259,23 @@ export async function getTaskViewModels(): Promise<TaskViewModel[]> {
   });
 }
 
-// Builds the Monday-Sunday week containing `anchorDate` for the Weekly
-// Overview page — see specs/weekly-overview.md. `anchorDate` picks *which*
-// week to show; `now` is the real current instant used for every "is this
-// today/this week" check, regardless of which week is being displayed.
-// Callers must capture `now` once themselves (e.g. also to default
-// `anchorDate` when no week param is supplied) rather than letting this
-// function read the clock again, so the two can't disagree across a
-// midnight crossing within the same request.
-export async function getWeeklyOverview(anchorDate: Date, now: Date): Promise<WeeklyOverview> {
+// Pure (no I/O): builds the Monday-Sunday week containing `anchorDate` from
+// an already-fetched, already-consistent `allTasks`/`allCompletions`
+// snapshot — see specs/weekly-overview.md for the placement rules. `now` is
+// the real current instant used for every "is this today/this week" check,
+// regardless of which week is being displayed. Split out from
+// `getWeeklyOverview` so `getWeeklyProgress` can reuse the exact same
+// snapshot for both the overview and its own one-off-task pass, instead of
+// querying tasks a second time.
+function buildWeeklyOverview(
+  anchorDate: Date,
+  now: Date,
+  allTasks: Task[],
+  allCompletions: TaskCompletion[],
+): WeeklyOverview {
   const todayISO = getTodayISODate(now);
   const { start, end, startDate } = getWeekRange(anchorDate);
   const weekContainsToday = todayISO >= start && todayISO <= end;
-  const allTasks = await getTasks();
-  const allCompletions = await getAllCompletions();
 
   const days: DayColumn[] = [];
   for (let i = 0; i < 7; i++) {
@@ -334,13 +350,30 @@ export async function getWeeklyOverview(anchorDate: Date, now: Date): Promise<We
   return { weekStart: start, weekEnd: end, days, openTasks, timesPerWeekItems };
 }
 
+// Builds the Monday-Sunday week containing `anchorDate` for the Weekly
+// Overview page — see specs/weekly-overview.md. `anchorDate` picks *which*
+// week to show; `now` is the real current instant used for every "is this
+// today/this week" check, regardless of which week is being displayed.
+// Callers must capture `now` once themselves (e.g. also to default
+// `anchorDate` when no week param is supplied) rather than letting this
+// function read the clock again, so the two can't disagree across a
+// midnight crossing within the same request. Fetches its task/completion
+// data as one consistent snapshot (see getTasksAndCompletionsSnapshot).
+export async function getWeeklyOverview(anchorDate: Date, now: Date): Promise<WeeklyOverview> {
+  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot();
+  return buildWeeklyOverview(anchorDate, now, allTasks, allCompletions);
+}
+
 // Computes the real current week's progress — see specs/task-progress.md.
 // Takes only `now` (no anchor date): it always computes the week containing
 // `now`, so it can never be made to show a different, navigated week by
-// mistake. Reuses `getWeeklyOverview(now, now)` for everything except the
-// one-off-task count, rather than re-deriving due-date/eligibility logic.
+// mistake. Fetches one task/completion snapshot and reuses it for both the
+// underlying week overview and its own one-off-task pass below, rather than
+// querying tasks a second time (and rather than re-deriving due-date/
+// eligibility logic, which stays in buildWeeklyOverview).
 export async function getWeeklyProgress(now: Date): Promise<WeeklyProgress> {
-  const overview = await getWeeklyOverview(now, now);
+  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot();
+  const overview = buildWeeklyOverview(now, now, allTasks, allCompletions);
 
   let planned = 0;
   let completed = 0;
@@ -359,8 +392,9 @@ export async function getWeeklyProgress(now: Date): Promise<WeeklyProgress> {
   // Tasks shows for this week (always eligible — see specs/task-progress.md
   // for why no createdAt check is needed here). A task completed this week
   // (by completedAt) counts as both planned and completed; one completed in
-  // an earlier week contributes nothing.
-  for (const task of await getTasks()) {
+  // an earlier week contributes nothing. Reuses `allTasks` from the same
+  // snapshot `overview` was built from, rather than querying again.
+  for (const task of allTasks) {
     if (task.recurrence !== null) continue;
 
     if (!task.completed) {

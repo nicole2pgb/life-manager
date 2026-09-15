@@ -11,10 +11,14 @@ export const tasks = mysqlTable("tasks", {
   title: varchar("title", { length: 200 }).notNull(),
   notes: varchar("notes", { length: 2000 }),
   completed: boolean("completed").notNull().default(false),
-  completedAt: datetime("completed_at"), // meaningful only when recurrence is null
+  // fsp: 3 (millisecond precision) — the app supplies `Date` values with
+  // millisecond precision (`new Date()`), and task ordering depends on
+  // `createdAt`; a plain DATETIME (second precision) would silently
+  // truncate that and widen the tie window for near-simultaneous creates.
+  completedAt: datetime("completed_at", { fsp: 3 }), // meaningful only when recurrence is null
   recurrence: json("recurrence").$type<RecurrenceRule | null>(), // null = one-off task
-  createdAt: datetime("created_at").notNull(),
-  updatedAt: datetime("updated_at").notNull(),
+  createdAt: datetime("created_at", { fsp: 3 }).notNull(),
+  updatedAt: datetime("updated_at", { fsp: 3 }).notNull(),
 });
 
 export const taskCompletions = mysqlTable(
@@ -32,7 +36,7 @@ export const taskCompletions = mysqlTable(
     // app-side parsing). Keeping it a plain string end-to-end sidesteps that
     // entirely and matches TaskCompletion.occurrenceDate's existing type.
     occurrenceDate: date("occurrence_date", { mode: "string" }).notNull(),
-    completedAt: datetime("completed_at").notNull(),
+    completedAt: datetime("completed_at", { fsp: 3 }).notNull(),
   },
   (table) => ({
     oneCompletionPerTaskPerDay: uniqueIndex("one_completion_per_task_per_day").on(
