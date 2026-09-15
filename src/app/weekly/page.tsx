@@ -22,11 +22,11 @@ export default async function WeeklyPage({
   // disagree if a request happens to straddle midnight.
   const now = new Date();
   const anchorDate = (week && parseISODate(week)) || now;
-  const overview = getWeeklyOverview(anchorDate, now);
+  const overview = await getWeeklyOverview(anchorDate, now);
   // Always the real current week, independent of `anchorDate`/`week` above —
   // see specs/task-progress.md. Deliberately not derived from `overview`,
   // since that reflects whichever week is being navigated to.
-  const progress = getWeeklyProgress(now);
+  const progress = await getWeeklyProgress(now);
   const progressPercentage =
     progress.planned === 0 ? null : Math.round((progress.completed / progress.planned) * 100);
 

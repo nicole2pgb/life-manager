@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { and, desc, eq } from "drizzle-orm";
+import { db } from "@/lib/db/client";
+import { tasks as tasksTable, taskCompletions as taskCompletionsTable } from "@/lib/db/schema";
 import type {
   DayColumn,
   RecurrenceRule,
@@ -13,41 +16,65 @@ import type {
 } from "@/lib/task-types";
 import { formatISODate, getTodayISODate, getWeekday, getWeekRange, isDueOn } from "@/lib/recurrence";
 
-// Server-only in-memory store. Persisted on `globalThis` so data survives
-// Next.js dev server hot reloads. Will be replaced by a real database later.
-// Do not import this module from client components.
-const globalForTasks = globalThis as unknown as {
-  __tasks?: Task[];
-  __taskCompletions?: TaskCompletion[];
-};
-const tasks: Task[] = globalForTasks.__tasks ?? (globalForTasks.__tasks = []);
-const completions: TaskCompletion[] =
-  globalForTasks.__taskCompletions ?? (globalForTasks.__taskCompletions = []);
+// Server-only repository, backed by MySQL via Drizzle — see
+// specs/mysql-persistence.md. Do not import this module from client
+// components. The rest of the app (task-actions.ts, both pages) only ever
+// sees the Task/TaskCompletion/*ViewModel shapes from task-types.ts; the
+// mapping to/from Drizzle's snake_case row shapes happens entirely here.
 
-// Tasks created before `recurrence`/`completedAt` existed (surviving a dev
-// hot reload in the shared global array) won't have those fields at all.
-// Normalize them in place, once, so recurrence logic never reads `undefined`.
-for (const task of tasks) {
-  if (task.recurrence === undefined) {
-    task.recurrence = null;
-  }
-  if (task.completedAt === undefined) {
-    task.completedAt = null;
-  }
+type TaskRow = typeof tasksTable.$inferSelect;
+type TaskCompletionRow = typeof taskCompletionsTable.$inferSelect;
+
+function rowToTask(row: TaskRow): Task {
+  return {
+    id: row.id,
+    title: row.title,
+    notes: row.notes,
+    completed: row.completed,
+    completedAt: row.completedAt ? row.completedAt.toISOString() : null,
+    recurrence: row.recurrence,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
 }
 
-export function getTasks(): Task[] {
-  return [...tasks].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+function rowToTaskCompletion(row: TaskCompletionRow): TaskCompletion {
+  return {
+    id: row.id,
+    taskId: row.taskId,
+    occurrenceDate: row.occurrenceDate,
+    completedAt: row.completedAt.toISOString(),
+  };
 }
 
-export function createTask(input: {
+// Bulk-use only (internal): fetches every completion once so callers that
+// need to look completions up per-task (getTaskViewModels, getWeeklyOverview,
+// getWeeklyProgress) can filter in memory instead of issuing one query per
+// task — the same shape of work the in-memory array did implicitly.
+async function getAllCompletions(): Promise<TaskCompletion[]> {
+  const rows = await db.select().from(taskCompletionsTable);
+  return rows.map(rowToTaskCompletion);
+}
+
+function completionsFor(allCompletions: TaskCompletion[], taskId: string): TaskCompletion[] {
+  return allCompletions.filter((c) => c.taskId === taskId);
+}
+
+export async function getTasks(): Promise<Task[]> {
+  const rows = await db.select().from(tasksTable).orderBy(desc(tasksTable.createdAt));
+  return rows.map(rowToTask);
+}
+
+export async function createTask(input: {
   title: string;
   notes: string | null;
   recurrence: RecurrenceRule | null;
-}): Task {
-  const now = new Date().toISOString();
-  const task: Task = {
-    id: randomUUID(),
+}): Promise<Task> {
+  const id = randomUUID();
+  const now = new Date();
+
+  await db.insert(tasksTable).values({
+    id,
     title: input.title,
     notes: input.notes,
     completed: false,
@@ -55,49 +82,76 @@ export function createTask(input: {
     recurrence: input.recurrence,
     createdAt: now,
     updatedAt: now,
+  });
+
+  return {
+    id,
+    title: input.title,
+    notes: input.notes,
+    completed: false,
+    completedAt: null,
+    recurrence: input.recurrence,
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
   };
-  tasks.push(task);
-  return task;
 }
 
-export function updateTask(
+export async function updateTask(
   id: string,
   input: { title: string; notes: string | null; recurrence: RecurrenceRule | null },
-): Task | null {
-  const task = tasks.find((t) => t.id === id);
-  if (!task) return null;
+): Promise<Task | null> {
+  // Read-then-conditionally-write (the recurrence-gain/loss branches below
+  // depend on the row's *previous* recurrence) — wrapped in a transaction
+  // with a row lock so a concurrent update can't interleave between the
+  // read and the write.
+  return db.transaction(async (tx) => {
+    const [row] = await tx.select().from(tasksTable).where(eq(tasksTable.id, id)).for("update");
+    if (!row) return null;
 
-  // Removing recurrence turns the task back into a one-off task: its
-  // `completed` flag was inert while recurring, so it starts fresh.
-  const isRemovingRecurrence = task.recurrence !== null && input.recurrence === null;
-  // Gaining recurrence: `completedAt` is meaningful only for one-off tasks
-  // (see specs/task-progress.md), so it must not carry a stale value forward.
-  const isGainingRecurrence = task.recurrence === null && input.recurrence !== null;
+    // Removing recurrence turns the task back into a one-off task: its
+    // `completed` flag was inert while recurring, so it starts fresh.
+    const isRemovingRecurrence = row.recurrence !== null && input.recurrence === null;
+    // Gaining recurrence: `completedAt` is meaningful only for one-off tasks
+    // (see specs/task-progress.md), so it must not carry a stale value forward.
+    const isGainingRecurrence = row.recurrence === null && input.recurrence !== null;
 
-  task.title = input.title;
-  task.notes = input.notes;
-  task.recurrence = input.recurrence;
-  if (isRemovingRecurrence) {
-    task.completed = false;
-    task.completedAt = null;
-  } else if (isGainingRecurrence) {
-    task.completedAt = null;
-  }
-  task.updatedAt = new Date().toISOString();
-  return task;
+    const now = new Date();
+    const completed = isRemovingRecurrence ? false : row.completed;
+    const completedAt = isRemovingRecurrence || isGainingRecurrence ? null : row.completedAt;
+
+    await tx
+      .update(tasksTable)
+      .set({
+        title: input.title,
+        notes: input.notes,
+        recurrence: input.recurrence,
+        completed,
+        completedAt,
+        updatedAt: now,
+      })
+      .where(eq(tasksTable.id, id));
+
+    return rowToTask({
+      ...row,
+      title: input.title,
+      notes: input.notes,
+      recurrence: input.recurrence,
+      completed,
+      completedAt,
+      updatedAt: now,
+    });
+  });
 }
 
-export function deleteTask(id: string): void {
-  const index = tasks.findIndex((t) => t.id === id);
-  if (index !== -1) tasks.splice(index, 1);
-
-  for (let i = completions.length - 1; i >= 0; i--) {
-    if (completions[i].taskId === id) completions.splice(i, 1);
-  }
+export async function deleteTask(id: string): Promise<void> {
+  // task_completions.task_id is ON DELETE CASCADE — a single statement
+  // removes the task and all of its completions atomically.
+  await db.delete(tasksTable).where(eq(tasksTable.id, id));
 }
 
-export function getCompletionsForTask(taskId: string): TaskCompletion[] {
-  return completions.filter((c) => c.taskId === taskId);
+export async function getCompletionsForTask(taskId: string): Promise<TaskCompletion[]> {
+  const rows = await db.select().from(taskCompletionsTable).where(eq(taskCompletionsTable.taskId, taskId));
+  return rows.map(rowToTaskCompletion);
 }
 
 // Toggles a task's occurrence for *today*, server-side. For a one-off task
@@ -106,46 +160,58 @@ export function getCompletionsForTask(taskId: string): TaskCompletion[] {
 // TaskCompletion row and never touches `completedAt`. A `weekdays` task not
 // due today is rejected (no-op) even if called directly, since the client's
 // UI disabling it is not sufficient on its own.
-export function toggleTaskOccurrence(id: string): Task | null {
-  const task = tasks.find((t) => t.id === id);
-  if (!task) return null;
+export async function toggleTaskOccurrence(id: string): Promise<Task | null> {
+  return db.transaction(async (tx) => {
+    const [row] = await tx.select().from(tasksTable).where(eq(tasksTable.id, id)).for("update");
+    if (!row) return null;
 
-  // Capture one instant and derive everything from it, so a midnight
-  // crossing between calls can't put the weekday/due check and the
-  // recorded occurrence date on different calendar days.
-  const now = new Date();
+    // Capture one instant and derive everything from it, so a midnight
+    // crossing during the transaction can't put the weekday/due check and
+    // the recorded occurrence date on different calendar days.
+    const now = new Date();
 
-  if (task.recurrence === null) {
-    task.completed = !task.completed;
-    task.completedAt = task.completed ? now.toISOString() : null;
-    task.updatedAt = now.toISOString();
-    return task;
-  }
+    if (row.recurrence === null) {
+      const completed = !row.completed;
+      const completedAt = completed ? now : null;
+      await tx
+        .update(tasksTable)
+        .set({ completed, completedAt, updatedAt: now })
+        .where(eq(tasksTable.id, id));
+      return rowToTask({ ...row, completed, completedAt, updatedAt: now });
+    }
 
-  if (!isDueOn(task.recurrence, getWeekday(now))) {
-    return task;
-  }
+    if (!isDueOn(row.recurrence, getWeekday(now))) {
+      return rowToTask(row);
+    }
 
-  const occurrenceDate = getTodayISODate(now);
-  const existingIndex = completions.findIndex(
-    (c) => c.taskId === id && c.occurrenceDate === occurrenceDate,
-  );
-  if (existingIndex !== -1) {
-    completions.splice(existingIndex, 1);
-  } else {
-    completions.push({
-      id: randomUUID(),
-      taskId: id,
-      occurrenceDate,
-      completedAt: now.toISOString(),
-    });
-  }
+    const occurrenceDate = getTodayISODate(now);
 
-  task.updatedAt = now.toISOString();
-  return task;
+    const [existing] = await tx
+      .select()
+      .from(taskCompletionsTable)
+      .where(
+        and(eq(taskCompletionsTable.taskId, id), eq(taskCompletionsTable.occurrenceDate, occurrenceDate)),
+      )
+      .for("update");
+
+    if (existing) {
+      await tx.delete(taskCompletionsTable).where(eq(taskCompletionsTable.id, existing.id));
+    } else {
+      await tx.insert(taskCompletionsTable).values({
+        id: randomUUID(),
+        taskId: id,
+        occurrenceDate,
+        completedAt: now,
+      });
+    }
+
+    await tx.update(tasksTable).set({ updatedAt: now }).where(eq(tasksTable.id, id));
+
+    return rowToTask({ ...row, updatedAt: now });
+  });
 }
 
-export function getTaskViewModels(): TaskViewModel[] {
+export async function getTaskViewModels(): Promise<TaskViewModel[]> {
   // Capture one instant and derive today's date, weekday, and week range
   // from it, so they can't disagree about what day "now" falls on.
   const now = new Date();
@@ -153,12 +219,15 @@ export function getTaskViewModels(): TaskViewModel[] {
   const todayWeekday = getWeekday(now);
   const { start, end } = getWeekRange(now);
 
-  return getTasks().map((task) => {
+  const allTasks = await getTasks();
+  const allCompletions = await getAllCompletions();
+
+  return allTasks.map((task) => {
     if (task.recurrence === null) {
       return { task, isDueToday: true, isCompletedToday: task.completed, weeklyCompletedCount: 0 };
     }
 
-    const taskCompletions = getCompletionsForTask(task.id);
+    const taskCompletions = completionsFor(allCompletions, task.id);
     const isDueToday = isDueOn(task.recurrence, todayWeekday);
     // A completion recorded under a since-changed recurrence rule must not
     // make a currently non-due occurrence look completed.
@@ -185,11 +254,12 @@ export function getTaskViewModels(): TaskViewModel[] {
 // `anchorDate` when no week param is supplied) rather than letting this
 // function read the clock again, so the two can't disagree across a
 // midnight crossing within the same request.
-export function getWeeklyOverview(anchorDate: Date, now: Date): WeeklyOverview {
+export async function getWeeklyOverview(anchorDate: Date, now: Date): Promise<WeeklyOverview> {
   const todayISO = getTodayISODate(now);
   const { start, end, startDate } = getWeekRange(anchorDate);
   const weekContainsToday = todayISO >= start && todayISO <= end;
-  const allTasks = getTasks();
+  const allTasks = await getTasks();
+  const allCompletions = await getAllCompletions();
 
   const days: DayColumn[] = [];
   for (let i = 0; i < 7; i++) {
@@ -213,7 +283,7 @@ export function getWeeklyOverview(anchorDate: Date, now: Date): WeeklyOverview {
 
       if (!isDueOn(task.recurrence, weekday)) continue;
 
-      const isCompleted = getCompletionsForTask(task.id).some(
+      const isCompleted = completionsFor(allCompletions, task.id).some(
         (c) => c.occurrenceDate === dateISO,
       );
       items.push({ task, isCompleted, isInteractive: isToday });
@@ -229,7 +299,7 @@ export function getWeeklyOverview(anchorDate: Date, now: Date): WeeklyOverview {
     const createdDateISO = formatISODate(new Date(task.createdAt));
     if (createdDateISO > end) continue;
 
-    const taskCompletions = getCompletionsForTask(task.id);
+    const taskCompletions = completionsFor(allCompletions, task.id);
     const completedCount = new Set(
       taskCompletions
         .filter((c) => c.occurrenceDate >= start && c.occurrenceDate <= end)
@@ -269,8 +339,8 @@ export function getWeeklyOverview(anchorDate: Date, now: Date): WeeklyOverview {
 // `now`, so it can never be made to show a different, navigated week by
 // mistake. Reuses `getWeeklyOverview(now, now)` for everything except the
 // one-off-task count, rather than re-deriving due-date/eligibility logic.
-export function getWeeklyProgress(now: Date): WeeklyProgress {
-  const overview = getWeeklyOverview(now, now);
+export async function getWeeklyProgress(now: Date): Promise<WeeklyProgress> {
+  const overview = await getWeeklyOverview(now, now);
 
   let planned = 0;
   let completed = 0;
@@ -290,7 +360,7 @@ export function getWeeklyProgress(now: Date): WeeklyProgress {
   // for why no createdAt check is needed here). A task completed this week
   // (by completedAt) counts as both planned and completed; one completed in
   // an earlier week contributes nothing.
-  for (const task of getTasks()) {
+  for (const task of await getTasks()) {
     if (task.recurrence !== null) continue;
 
     if (!task.completed) {

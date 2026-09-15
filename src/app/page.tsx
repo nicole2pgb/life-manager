@@ -7,8 +7,8 @@ import { TaskList } from "@/components/tasks/task-list";
 // clock at request time — this page must not be statically cached.
 export const dynamic = "force-dynamic";
 
-export default function Home() {
-  const tasks = getTaskViewModels();
+export default async function Home() {
+  const tasks = await getTaskViewModels();
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-4 py-12 sm:px-6">

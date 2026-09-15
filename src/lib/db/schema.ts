@@ -24,7 +24,14 @@ export const taskCompletions = mysqlTable(
     taskId: char("task_id", { length: 36 })
       .notNull()
       .references(() => tasks.id, { onDelete: "cascade" }),
-    occurrenceDate: date("occurrence_date").notNull(), // calendar date only, no time/timezone component
+    // mode: "string" is deliberate, not the Drizzle default: a plain DATE has
+    // no "Z"-suffix trick the way `datetime()` does (see client.ts), so the
+    // default Date-object mode would parse "YYYY-MM-DD" as UTC midnight and
+    // risk shifting by a day if ever read through local-timezone getters
+    // (exactly what recurrence.ts's parseISODate already guards against for
+    // app-side parsing). Keeping it a plain string end-to-end sidesteps that
+    // entirely and matches TaskCompletion.occurrenceDate's existing type.
+    occurrenceDate: date("occurrence_date", { mode: "string" }).notNull(),
     completedAt: datetime("completed_at").notNull(),
   },
   (table) => ({

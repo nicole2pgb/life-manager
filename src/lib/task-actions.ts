@@ -84,7 +84,7 @@ export async function createTaskAction(formData: FormData): Promise<TaskActionRe
   const parsed = parseTaskInput(formData);
   if ("error" in parsed) return { error: parsed.error };
 
-  createTask(parsed);
+  await createTask(parsed);
   // Weekly Overview also reads task data, so it must be invalidated too.
   revalidatePath("/");
   revalidatePath("/weekly");
@@ -98,7 +98,7 @@ export async function updateTaskAction(formData: FormData): Promise<TaskActionRe
   const parsed = parseTaskInput(formData);
   if ("error" in parsed) return { error: parsed.error };
 
-  const updated = updateTask(id, parsed);
+  const updated = await updateTask(id, parsed);
   if (!updated) return { error: "Task not found." };
 
   // Weekly Overview also reads task data, so it must be invalidated too.
@@ -111,7 +111,7 @@ export async function deleteTaskAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   if (!id) return;
 
-  deleteTask(id);
+  await deleteTask(id);
   // Weekly Overview also reads task data, so it must be invalidated too.
   revalidatePath("/");
   revalidatePath("/weekly");
@@ -121,7 +121,7 @@ export async function toggleTaskAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   if (!id) return;
 
-  toggleTaskOccurrence(id);
+  await toggleTaskOccurrence(id);
   // This action is invoked from both the Tasks page and Weekly Overview —
   // revalidate both so checkbox state, TaskCompletion state, and the
   // times-per-week count stay in sync regardless of which page toggled it.
