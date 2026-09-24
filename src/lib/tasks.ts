@@ -17,10 +17,19 @@ import type {
 import { formatISODate, getTodayISODate, getWeekday, getWeekRange, isDueOn } from "@/lib/recurrence";
 
 // Server-only repository, backed by MySQL via Drizzle — see
-// specs/mysql-persistence.md. Do not import this module from client
-// components. The rest of the app (task-actions.ts, both pages) only ever
-// sees the Task/TaskCompletion/*ViewModel shapes from task-types.ts; the
-// mapping to/from Drizzle's snake_case row shapes happens entirely here.
+// specs/mysql-persistence.md and specs/user-login.md. Do not import this
+// module from client components. The rest of the app (task-actions.ts, both
+// pages) only ever sees the Task/TaskCompletion/*ViewModel shapes from
+// task-types.ts; the mapping to/from Drizzle's snake_case row shapes
+// happens entirely here.
+//
+// Every exported function takes the caller's authenticated `userId` (from
+// verifySession(), never trusted from a client value) as its first
+// parameter and scopes every query by it — see specs/user-login.md FR5.9.
+// `tasks.user_id` is nullable at the schema/DB level only to accommodate the
+// 4 pre-existing legacy rows during migration; every query here filters on
+// a specific, non-null userId, so a row this module ever returns always has
+// one — see rowToTask's non-null assertion.
 
 type TaskRow = typeof tasksTable.$inferSelect;
 type TaskCompletionRow = typeof taskCompletionsTable.$inferSelect;
@@ -28,6 +37,12 @@ type TaskCompletionRow = typeof taskCompletionsTable.$inferSelect;
 function rowToTask(row: TaskRow): Task {
   return {
     id: row.id,
+    // Every query in this file filters `WHERE user_id = <specific userId>`,
+    // which (per SQL's NULL-never-equals-anything semantics) can never
+    // match a legacy row with a NULL user_id — so any row reaching this
+    // function is guaranteed to have one. See specs/user-login.md Migration
+    // Strategy for why the column itself is still nullable at the DB level.
+    userId: row.userId!,
     title: row.title,
     notes: row.notes,
     completed: row.completed,
@@ -47,22 +62,39 @@ function rowToTaskCompletion(row: TaskCompletionRow): TaskCompletion {
   };
 }
 
-// Bulk-use only (internal): fetches every task and every completion as one
-// consistent snapshot, so callers that derive a single view from both
-// tables (getTaskViewModels, getWeeklyOverview, getWeeklyProgress) can't
-// observe a task list and a completion list that reflect different points
-// in time — e.g. a task deleted (cascading its completions) by another
-// request landing in the gap between two separate, unsynchronized queries.
-// A transaction is sufficient for this (InnoDB's default REPEATABLE READ
-// isolation gives every read inside one transaction the same snapshot) —
-// no row locking is needed since this is read-only.
-async function getTasksAndCompletionsSnapshot(): Promise<{
+// Bulk-use only (internal): fetches every one of this user's tasks and
+// completions as one consistent snapshot, so callers that derive a single
+// view from both tables (getTaskViewModels, getWeeklyOverview,
+// getWeeklyProgress) can't observe a task list and a completion list that
+// reflect different points in time — e.g. a task deleted (cascading its
+// completions) by another request landing in the gap between two separate,
+// unsynchronized queries. A transaction is sufficient for this (InnoDB's
+// default REPEATABLE READ isolation gives every read inside one transaction
+// the same snapshot) — no row locking is needed since this is read-only.
+// `task_completions` has no direct user_id column (see
+// specs/user-login.md's Data Model — ownership is inherited transitively
+// through task_id), so it's scoped here via a join against this user's own
+// tasks rather than fetched unscoped and filtered in memory afterward.
+async function getTasksAndCompletionsSnapshot(userId: string): Promise<{
   tasks: Task[];
   completions: TaskCompletion[];
 }> {
   return db.transaction(async (tx) => {
-    const taskRows = await tx.select().from(tasksTable).orderBy(desc(tasksTable.createdAt));
-    const completionRows = await tx.select().from(taskCompletionsTable);
+    const taskRows = await tx
+      .select()
+      .from(tasksTable)
+      .where(eq(tasksTable.userId, userId))
+      .orderBy(desc(tasksTable.createdAt));
+    const completionRows = await tx
+      .select({
+        id: taskCompletionsTable.id,
+        taskId: taskCompletionsTable.taskId,
+        occurrenceDate: taskCompletionsTable.occurrenceDate,
+        completedAt: taskCompletionsTable.completedAt,
+      })
+      .from(taskCompletionsTable)
+      .innerJoin(tasksTable, eq(taskCompletionsTable.taskId, tasksTable.id))
+      .where(eq(tasksTable.userId, userId));
     return {
       tasks: taskRows.map(rowToTask),
       completions: completionRows.map(rowToTaskCompletion),
@@ -74,21 +106,25 @@ function completionsFor(allCompletions: TaskCompletion[], taskId: string): TaskC
   return allCompletions.filter((c) => c.taskId === taskId);
 }
 
-export async function getTasks(): Promise<Task[]> {
-  const rows = await db.select().from(tasksTable).orderBy(desc(tasksTable.createdAt));
+export async function getTasks(userId: string): Promise<Task[]> {
+  const rows = await db
+    .select()
+    .from(tasksTable)
+    .where(eq(tasksTable.userId, userId))
+    .orderBy(desc(tasksTable.createdAt));
   return rows.map(rowToTask);
 }
 
-export async function createTask(input: {
-  title: string;
-  notes: string | null;
-  recurrence: RecurrenceRule | null;
-}): Promise<Task> {
+export async function createTask(
+  userId: string,
+  input: { title: string; notes: string | null; recurrence: RecurrenceRule | null },
+): Promise<Task> {
   const id = randomUUID();
   const now = new Date();
 
   await db.insert(tasksTable).values({
     id,
+    userId,
     title: input.title,
     notes: input.notes,
     completed: false,
@@ -100,6 +136,7 @@ export async function createTask(input: {
 
   return {
     id,
+    userId,
     title: input.title,
     notes: input.notes,
     completed: false,
@@ -111,15 +148,22 @@ export async function createTask(input: {
 }
 
 export async function updateTask(
+  userId: string,
   id: string,
   input: { title: string; notes: string | null; recurrence: RecurrenceRule | null },
 ): Promise<Task | null> {
   // Read-then-conditionally-write (the recurrence-gain/loss branches below
   // depend on the row's *previous* recurrence) — wrapped in a transaction
   // with a row lock so a concurrent update can't interleave between the
-  // read and the write.
+  // read and the write. Scoping the SELECT by userId as well as id means a
+  // task belonging to a different user is indistinguishable from a
+  // nonexistent one (FR5.11) — the caller gets `null` either way.
   return db.transaction(async (tx) => {
-    const [row] = await tx.select().from(tasksTable).where(eq(tasksTable.id, id)).for("update");
+    const [row] = await tx
+      .select()
+      .from(tasksTable)
+      .where(and(eq(tasksTable.id, id), eq(tasksTable.userId, userId)))
+      .for("update");
     if (!row) return null;
 
     // Removing recurrence turns the task back into a one-off task: its
@@ -143,7 +187,7 @@ export async function updateTask(
         completedAt,
         updatedAt: now,
       })
-      .where(eq(tasksTable.id, id));
+      .where(and(eq(tasksTable.id, id), eq(tasksTable.userId, userId)));
 
     return rowToTask({
       ...row,
@@ -157,15 +201,12 @@ export async function updateTask(
   });
 }
 
-export async function deleteTask(id: string): Promise<void> {
+export async function deleteTask(userId: string, id: string): Promise<void> {
   // task_completions.task_id is ON DELETE CASCADE — a single statement
-  // removes the task and all of its completions atomically.
-  await db.delete(tasksTable).where(eq(tasksTable.id, id));
-}
-
-export async function getCompletionsForTask(taskId: string): Promise<TaskCompletion[]> {
-  const rows = await db.select().from(taskCompletionsTable).where(eq(taskCompletionsTable.taskId, taskId));
-  return rows.map(rowToTaskCompletion);
+  // removes the task and all of its completions atomically. Scoping by
+  // userId means deleting another user's task id is a silent no-op (FR5.11),
+  // not an error and not an actual deletion.
+  await db.delete(tasksTable).where(and(eq(tasksTable.id, id), eq(tasksTable.userId, userId)));
 }
 
 // Toggles a task's occurrence for *today*, server-side. For a one-off task
@@ -173,10 +214,16 @@ export async function getCompletionsForTask(taskId: string): Promise<TaskComplet
 // specs/task-progress.md); for a recurring task it toggles today's
 // TaskCompletion row and never touches `completedAt`. A `weekdays` task not
 // due today is rejected (no-op) even if called directly, since the client's
-// UI disabling it is not sufficient on its own.
-export async function toggleTaskOccurrence(id: string): Promise<Task | null> {
+// UI disabling it is not sufficient on its own. Scoping the initial SELECT
+// by userId means a different user's task id behaves like it doesn't exist
+// (FR5.11).
+export async function toggleTaskOccurrence(userId: string, id: string): Promise<Task | null> {
   return db.transaction(async (tx) => {
-    const [row] = await tx.select().from(tasksTable).where(eq(tasksTable.id, id)).for("update");
+    const [row] = await tx
+      .select()
+      .from(tasksTable)
+      .where(and(eq(tasksTable.id, id), eq(tasksTable.userId, userId)))
+      .for("update");
     if (!row) return null;
 
     // Capture one instant and derive everything from it, so a midnight
@@ -190,7 +237,7 @@ export async function toggleTaskOccurrence(id: string): Promise<Task | null> {
       await tx
         .update(tasksTable)
         .set({ completed, completedAt, updatedAt: now })
-        .where(eq(tasksTable.id, id));
+        .where(and(eq(tasksTable.id, id), eq(tasksTable.userId, userId)));
       return rowToTask({ ...row, completed, completedAt, updatedAt: now });
     }
 
@@ -219,13 +266,16 @@ export async function toggleTaskOccurrence(id: string): Promise<Task | null> {
       });
     }
 
-    await tx.update(tasksTable).set({ updatedAt: now }).where(eq(tasksTable.id, id));
+    await tx
+      .update(tasksTable)
+      .set({ updatedAt: now })
+      .where(and(eq(tasksTable.id, id), eq(tasksTable.userId, userId)));
 
     return rowToTask({ ...row, updatedAt: now });
   });
 }
 
-export async function getTaskViewModels(): Promise<TaskViewModel[]> {
+export async function getTaskViewModels(userId: string): Promise<TaskViewModel[]> {
   // Capture one instant and derive today's date, weekday, and week range
   // from it, so they can't disagree about what day "now" falls on.
   const now = new Date();
@@ -233,7 +283,7 @@ export async function getTaskViewModels(): Promise<TaskViewModel[]> {
   const todayWeekday = getWeekday(now);
   const { start, end } = getWeekRange(now);
 
-  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot();
+  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot(userId);
 
   return allTasks.map((task) => {
     if (task.recurrence === null) {
@@ -260,13 +310,13 @@ export async function getTaskViewModels(): Promise<TaskViewModel[]> {
 }
 
 // Pure (no I/O): builds the Monday-Sunday week containing `anchorDate` from
-// an already-fetched, already-consistent `allTasks`/`allCompletions`
-// snapshot — see specs/weekly-overview.md for the placement rules. `now` is
-// the real current instant used for every "is this today/this week" check,
-// regardless of which week is being displayed. Split out from
-// `getWeeklyOverview` so `getWeeklyProgress` can reuse the exact same
-// snapshot for both the overview and its own one-off-task pass, instead of
-// querying tasks a second time.
+// an already-fetched, already-consistent, already-user-scoped `allTasks`/
+// `allCompletions` snapshot — see specs/weekly-overview.md for the
+// placement rules. `now` is the real current instant used for every "is
+// this today/this week" check, regardless of which week is being displayed.
+// Split out from `getWeeklyOverview` so `getWeeklyProgress` can reuse the
+// exact same snapshot for both the overview and its own one-off-task pass,
+// instead of querying tasks a second time.
 function buildWeeklyOverview(
   anchorDate: Date,
   now: Date,
@@ -358,15 +408,16 @@ function buildWeeklyOverview(
 // `anchorDate` when no week param is supplied) rather than letting this
 // function read the clock again, so the two can't disagree across a
 // midnight crossing within the same request. Fetches its task/completion
-// data as one consistent snapshot (see getTasksAndCompletionsSnapshot).
-export async function getWeeklyOverview(anchorDate: Date, now: Date): Promise<WeeklyOverview> {
-  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot();
+// data as one consistent, user-scoped snapshot (see
+// getTasksAndCompletionsSnapshot).
+export async function getWeeklyOverview(userId: string, anchorDate: Date, now: Date): Promise<WeeklyOverview> {
+  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot(userId);
   return buildWeeklyOverview(anchorDate, now, allTasks, allCompletions);
 }
 
 // Pure (no I/O): computes the real current week's progress from an
-// already-fetched `allTasks`/`allCompletions` snapshot — see
-// specs/task-progress.md. Always uses `now, now` for the underlying
+// already-fetched, already-user-scoped `allTasks`/`allCompletions` snapshot
+// — see specs/task-progress.md. Always uses `now, now` for the underlying
 // overview (progress is never scoped to a navigated week), regardless of
 // what week `allTasks`/`allCompletions` might otherwise be reused for by a
 // caller. Split out for the same reason as buildWeeklyOverview: so a single
@@ -418,13 +469,13 @@ function buildWeeklyProgress(
 }
 
 // Computes the real current week's progress — see specs/task-progress.md.
-// Takes only `now` (no anchor date): it always computes the week containing
-// `now`, so it can never be made to show a different, navigated week by
-// mistake. Fetches one task/completion snapshot and reuses it for both the
-// underlying week overview and the one-off-task pass in buildWeeklyProgress,
-// rather than querying tasks a second time.
-export async function getWeeklyProgress(now: Date): Promise<WeeklyProgress> {
-  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot();
+// Takes only `userId` and `now` (no anchor date): it always computes the
+// week containing `now`, so it can never be made to show a different,
+// navigated week by mistake. Fetches one task/completion snapshot and
+// reuses it for both the underlying week overview and the one-off-task pass
+// in buildWeeklyProgress, rather than querying tasks a second time.
+export async function getWeeklyProgress(userId: string, now: Date): Promise<WeeklyProgress> {
+  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot(userId);
   return buildWeeklyProgress(now, allTasks, allCompletions);
 }
 
@@ -439,10 +490,11 @@ export async function getWeeklyProgress(now: Date): Promise<WeeklyProgress> {
 // distinction between the two is unchanged: `overview` still follows
 // `anchorDate`, `progress` still always uses `now, now` internally.
 export async function getWeeklyPageData(
+  userId: string,
   anchorDate: Date,
   now: Date,
 ): Promise<{ overview: WeeklyOverview; progress: WeeklyProgress }> {
-  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot();
+  const { tasks: allTasks, completions: allCompletions } = await getTasksAndCompletionsSnapshot(userId);
   return {
     overview: buildWeeklyOverview(anchorDate, now, allTasks, allCompletions),
     progress: buildWeeklyProgress(now, allTasks, allCompletions),

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createTask, deleteTask, toggleTaskOccurrence, updateTask } from "@/lib/tasks";
+import { verifySession } from "@/lib/auth/session";
 import {
   TASK_TITLE_MAX_LENGTH,
   TASK_NOTES_MAX_LENGTH,
@@ -81,10 +82,12 @@ function parseTaskInput(
 }
 
 export async function createTaskAction(formData: FormData): Promise<TaskActionResult> {
+  const { userId } = await verifySession();
+
   const parsed = parseTaskInput(formData);
   if ("error" in parsed) return { error: parsed.error };
 
-  await createTask(parsed);
+  await createTask(userId, parsed);
   // Weekly Overview also reads task data, so it must be invalidated too.
   revalidatePath("/");
   revalidatePath("/weekly");
@@ -92,13 +95,18 @@ export async function createTaskAction(formData: FormData): Promise<TaskActionRe
 }
 
 export async function updateTaskAction(formData: FormData): Promise<TaskActionResult> {
+  const { userId } = await verifySession();
+
   const id = String(formData.get("id") ?? "");
   if (!id) return { error: "Missing task id." };
 
   const parsed = parseTaskInput(formData);
   if ("error" in parsed) return { error: parsed.error };
 
-  const updated = await updateTask(id, parsed);
+  // updateTask scopes its lookup by userId — a different user's task id
+  // returns null here exactly as a nonexistent one would (specs/user-login.md
+  // FR5.11), never revealing that the task exists under another account.
+  const updated = await updateTask(userId, id, parsed);
   if (!updated) return { error: "Task not found." };
 
   // Weekly Overview also reads task data, so it must be invalidated too.
@@ -108,20 +116,25 @@ export async function updateTaskAction(formData: FormData): Promise<TaskActionRe
 }
 
 export async function deleteTaskAction(formData: FormData): Promise<void> {
+  const { userId } = await verifySession();
+
   const id = String(formData.get("id") ?? "");
   if (!id) return;
 
-  await deleteTask(id);
+  // A no-op if `id` doesn't belong to this user — see deleteTask.
+  await deleteTask(userId, id);
   // Weekly Overview also reads task data, so it must be invalidated too.
   revalidatePath("/");
   revalidatePath("/weekly");
 }
 
 export async function toggleTaskAction(formData: FormData): Promise<void> {
+  const { userId } = await verifySession();
+
   const id = String(formData.get("id") ?? "");
   if (!id) return;
 
-  await toggleTaskOccurrence(id);
+  await toggleTaskOccurrence(userId, id);
   // This action is invoked from both the Tasks page and Weekly Overview —
   // revalidate both so checkbox state, TaskCompletion state, and the
   // times-per-week count stay in sync regardless of which page toggled it.

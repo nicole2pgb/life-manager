@@ -7,6 +7,7 @@ export type RecurrenceRule =
 
 export type Task = {
   id: string;
+  userId: string;
   title: string;
   notes: string | null;
   completed: boolean; // meaningful only when recurrence is null
