@@ -26,13 +26,58 @@ export const sessionOptions: SessionOptions = {
   },
 };
 
+// A session that can never legitimately be saved/destroyed (see the
+// read-only fallback in getSession() below) — its userId is simply absent,
+// which is all verifySession() needs to correctly treat it as
+// unauthenticated. save()/destroy() are safe no-ops rather than throwing:
+// nothing should ever legitimately call them on this object, but silently
+// doing nothing is strictly safer than crashing if something unexpected
+// does.
+function emptySession(): IronSession<SessionData> {
+  return {
+    save: async () => {},
+    destroy: () => {},
+    updateConfig: () => {},
+  } as IronSession<SessionData>;
+}
+
 // Server Components, Server Actions, and Route Handlers only, where
 // next/headers' cookies() is the real read/write store. Calling .save() or
 // .destroy() on the object this returns only works from a Server Action or
 // Route Handler (a Server Component's cookies() is read-only) — createSession
 // and destroySession below are only ever called from Server Actions.
+//
+// Confirmed Copilot finding on PR #6: a cookie that fails to decrypt
+// (corrupted, tampered, or sealed under a since-rotated SESSION_SECRET)
+// must behave as "no session", never throw — see specs/user-login.md
+// Security Requirements. iron-session's own internal handling only
+// swallows some failure modes (verified against
+// node_modules/iron-webcrypto/dist/index.js: "Expired seal", "Bad hmac
+// value", "Cannot find password", "Incorrect number of sealed components")
+// and lets others (e.g. "Wrong mac prefix", "Invalid expiration" — both
+// realistic for a genuinely corrupted, not just wrong-password, cookie)
+// propagate uncaught out of getIronSession() itself. This is the actual
+// defensive boundary, not a duplicate of that partial handling.
 export async function getSession(): Promise<IronSession<SessionData>> {
-  return getIronSession<SessionData>(await cookies(), sessionOptions);
+  const cookieStore = await cookies();
+  try {
+    return await getIronSession<SessionData>(cookieStore, sessionOptions);
+  } catch {
+    try {
+      // Clear the unreadable cookie and construct a fresh session in its
+      // place — with no cookie left to unseal, this succeeds trivially.
+      // Only possible in a Server Action/Route Handler, where cookies() is
+      // writable.
+      cookieStore.delete(sessionOptions.cookieName);
+      return await getIronSession<SessionData>(cookieStore, sessionOptions);
+    } catch {
+      // Either cookieStore is read-only (a Server Component calling this
+      // only to read session.userId, via verifySession()) or the retry
+      // failed for some other reason — either way, degrade to a safe,
+      // functionally-empty session rather than propagating an error.
+      return emptySession();
+    }
+  }
 }
 
 export async function createSession(userId: string): Promise<void> {

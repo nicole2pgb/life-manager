@@ -13,6 +13,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      // See vitest.stubs/server-only.ts — the real package throws
+      // unconditionally outside Next's own bundler.
+      "server-only": path.resolve(__dirname, "./vitest.stubs/server-only.ts"),
     },
   },
 });
