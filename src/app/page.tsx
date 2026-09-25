@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { getTaskViewModels } from "@/lib/tasks";
+import { verifySession } from "@/lib/auth/session";
+import { logoutAction } from "@/lib/auth/auth-actions";
 import { TaskForm } from "@/components/tasks/task-form";
 import { TaskList } from "@/components/tasks/task-list";
 
@@ -8,7 +10,11 @@ import { TaskList } from "@/components/tasks/task-list";
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const tasks = await getTaskViewModels();
+  // src/proxy.ts already redirects an unauthenticated request before this
+  // renders (optimistic check) — verifySession() here is the actual
+  // enforcement point, per specs/user-login.md's Technology Decisions.
+  const { userId } = await verifySession();
+  const tasks = await getTaskViewModels(userId);
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-4 py-12 sm:px-6">
@@ -19,12 +25,22 @@ export default async function Home() {
             Create, edit, and complete your tasks.
           </p>
         </div>
-        <Link
-          href="/weekly"
-          className="text-sm font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50"
-        >
-          Weekly Overview
-        </Link>
+        <div className="flex items-center gap-4">
+          <Link
+            href="/weekly"
+            className="text-sm font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50"
+          >
+            Weekly Overview
+          </Link>
+          <form action={logoutAction}>
+            <button
+              type="submit"
+              className="text-sm font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50"
+            >
+              Log out
+            </button>
+          </form>
+        </div>
       </header>
       <TaskForm />
       <TaskList tasks={tasks} />

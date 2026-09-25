@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getWeeklyPageData } from "@/lib/tasks";
+import { verifySession } from "@/lib/auth/session";
 import { formatISODate, parseISODate } from "@/lib/recurrence";
 import { WEEKDAY_LABELS } from "@/lib/task-types";
 import { WeeklyToggle } from "@/components/weekly/weekly-toggle";
@@ -15,6 +16,11 @@ export default async function WeeklyPage({
 }: {
   searchParams: Promise<{ week?: string }>;
 }) {
+  // src/proxy.ts already redirects an unauthenticated request before this
+  // renders (optimistic check) — verifySession() here is the actual
+  // enforcement point, per specs/user-login.md's Technology Decisions.
+  const { userId } = await verifySession();
+
   const { week } = await searchParams;
   // Capture one instant for this request: it's the default anchor date when
   // no valid `week` param is supplied, and it's also what `getWeeklyOverview`
@@ -28,7 +34,7 @@ export default async function WeeklyPage({
   // from a single snapshot (rather than two separate calls) means a
   // mutation landing in between can't make the grid and the progress
   // summary disagree about the database's state within one render.
-  const { overview, progress } = await getWeeklyPageData(anchorDate, now);
+  const { overview, progress } = await getWeeklyPageData(userId, anchorDate, now);
   const progressPercentage =
     progress.planned === 0 ? null : Math.round((progress.completed / progress.planned) * 100);
 

@@ -1,13 +1,28 @@
 import { mysqlTable, char, varchar, boolean, datetime, date, json, uniqueIndex } from "drizzle-orm/mysql-core";
 import type { RecurrenceRule } from "@/lib/task-types";
 
-// Mirrors specs/mysql-persistence.md exactly. This schema is a
-// persistence-only concern — src/lib/task-types.ts remains the single
-// source of truth for the shapes the rest of the app works with; the
+// Mirrors specs/mysql-persistence.md and specs/user-login.md exactly. This
+// schema is a persistence-only concern — src/lib/task-types.ts remains the
+// single source of truth for the shapes the rest of the app works with; the
 // repository layer (src/lib/tasks.ts) translates to and from these rows.
+
+export const users = mysqlTable("users", {
+  id: char("id", { length: 36 }).primaryKey(),
+  email: varchar("email", { length: 255 }).notNull().unique(),
+  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+  createdAt: datetime("created_at", { fsp: 3 }).notNull(),
+});
 
 export const tasks = mysqlTable("tasks", {
   id: char("id", { length: 36 }).primaryKey(),
+  // Tightened to NOT NULL + a foreign key in migration 0004, once the 4
+  // legacy rows that predated this column were explicitly assigned to an
+  // account (see specs/user-login.md's Migration Strategy and
+  // scripts/assign-legacy-tasks.ts) — confirmed via a zero-orphan check
+  // before this migration was generated.
+  userId: char("user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
   title: varchar("title", { length: 200 }).notNull(),
   notes: varchar("notes", { length: 2000 }),
   completed: boolean("completed").notNull().default(false),
