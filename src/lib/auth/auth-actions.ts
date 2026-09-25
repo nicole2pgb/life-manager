@@ -9,6 +9,13 @@ export type AuthActionResult = { error: string | null };
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PASSWORD_MIN_LENGTH = 8;
+// Matches users.email's VARCHAR(255) column (specs/user-login.md's Data
+// Model). Rejecting an over-length email here, before it ever reaches
+// createUser(), avoids either silent truncation or an unhandled
+// ER_DATA_TOO_LONG propagating out of a Server Action as an unstyled error
+// page — the same reasoning as validating password length here rather than
+// letting the database be the first thing to object.
+const EMAIL_MAX_LENGTH = 255;
 
 // A precomputed hash of an arbitrary, non-secret placeholder string — not
 // tied to any real account. Used only so a login attempt for a
@@ -24,7 +31,7 @@ function parseCredentials(formData: FormData): { email: string; password: string
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");
 
-  if (!email || !EMAIL_REGEX.test(email)) {
+  if (!email || !EMAIL_REGEX.test(email) || email.length > EMAIL_MAX_LENGTH) {
     return { error: "Enter a valid email address." };
   }
   if (password.length < PASSWORD_MIN_LENGTH) {

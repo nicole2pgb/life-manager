@@ -115,6 +115,31 @@ export async function getTasks(userId: string): Promise<Task[]> {
   return rows.map(rowToTask);
 }
 
+// Restored (Copilot PR #6 finding): dropped during the userId-scoping sweep
+// in 5b32002 with no replacement, even though every other exported function
+// in this file kept its equivalent and this file's own header comment
+// states every export scopes by userId. `task_completions` has no direct
+// user_id column (ownership is inherited transitively through task_id — see
+// specs/user-login.md's Data Model), so scoping here means joining against
+// this user's own tasks, exactly as getTasksAndCompletionsSnapshot already
+// does for its bulk case. A taskId belonging to another user (or that
+// doesn't exist) matches no rows via the join and returns `[]` — the same
+// "behaves as if it doesn't exist" treatment as updateTask/deleteTask
+// (FR5.11), never an error.
+export async function getCompletionsForTask(userId: string, taskId: string): Promise<TaskCompletion[]> {
+  const rows = await db
+    .select({
+      id: taskCompletionsTable.id,
+      taskId: taskCompletionsTable.taskId,
+      occurrenceDate: taskCompletionsTable.occurrenceDate,
+      completedAt: taskCompletionsTable.completedAt,
+    })
+    .from(taskCompletionsTable)
+    .innerJoin(tasksTable, eq(taskCompletionsTable.taskId, tasksTable.id))
+    .where(and(eq(taskCompletionsTable.taskId, taskId), eq(tasksTable.userId, userId)));
+  return rows.map(rowToTaskCompletion);
+}
+
 export async function createTask(
   userId: string,
   input: { title: string; notes: string | null; recurrence: RecurrenceRule | null },

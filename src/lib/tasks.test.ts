@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createTask,
   deleteTask,
+  getCompletionsForTask,
   getTasks,
   getTaskViewModels,
   getWeeklyOverview,
@@ -99,6 +100,38 @@ describe("cross-user task isolation", () => {
     const aliceOverviewTitles = aliceOverview.days.flatMap((day) => day.items.map((item) => item.task.title));
     expect(aliceOverviewTitles).not.toContain("Bob daily");
     expect(aliceOverviewTitles.every((title) => title === "Alice daily")).toBe(true);
+  });
+
+  it("getCompletionsForTask returns the task's own completions", async () => {
+    const alice = await makeUser();
+    const aliceTask = await createTask(alice.id, {
+      title: "Alice daily",
+      notes: null,
+      recurrence: { type: "daily" },
+    });
+
+    await toggleTaskOccurrence(alice.id, aliceTask.id);
+
+    const completions = await getCompletionsForTask(alice.id, aliceTask.id);
+    expect(completions).toHaveLength(1);
+    expect(completions[0].taskId).toBe(aliceTask.id);
+  });
+
+  it("getCompletionsForTask on another user's task id behaves as not found", async () => {
+    const alice = await makeUser();
+    const bob = await makeUser();
+    const aliceTask = await createTask(alice.id, {
+      title: "Alice daily",
+      notes: null,
+      recurrence: { type: "daily" },
+    });
+    await toggleTaskOccurrence(alice.id, aliceTask.id);
+
+    const asBob = await getCompletionsForTask(bob.id, aliceTask.id);
+    expect(asBob).toEqual([]);
+
+    const stillAlices = await getCompletionsForTask(alice.id, aliceTask.id);
+    expect(stillAlices).toHaveLength(1);
   });
 
   it("getWeeklyProgress totals are unaffected by another user's tasks", async () => {

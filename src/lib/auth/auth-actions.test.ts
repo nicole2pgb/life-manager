@@ -45,6 +45,19 @@ describe("registerAction", () => {
     expect(result.error).toBe("Password must be at least 8 characters.");
   });
 
+  it("rejects an email longer than 255 characters, without reaching the database", async () => {
+    // users.email is VARCHAR(255) (specs/user-login.md's Data Model) — this
+    // must be rejected before createUser() ever attempts the insert.
+    const overLongEmail = `${"a".repeat(250)}@ex.com`; // 257 chars, otherwise well-formed
+    expect(overLongEmail.length).toBeGreaterThan(255);
+
+    const result = await registerAction(credentials(overLongEmail, "Password123"));
+    expect(result.error).toBe("Enter a valid email address.");
+
+    const found = await getUserByEmail(overLongEmail);
+    expect(found).toBeNull();
+  });
+
   it("rejects a duplicate email, case-insensitively, without creating a second account", async () => {
     const email = testEmail();
     const existing = await createUser({ email, password: "Password123" });
