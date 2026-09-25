@@ -40,7 +40,12 @@ describe("proxy", () => {
   });
 
   it("treats a garbage/tampered session cookie as unauthenticated, not an error", async () => {
-    await expect(proxy(await requestTo("/", "not-a-real-sealed-cookie-value"))).resolves.not.toThrow();
+    // `.resolves.not.toThrow()` was a no-op — `toThrow` expects a function
+    // to invoke, not a resolved value, so it never actually inspected
+    // anything. `.resolves` alone already asserts the promise fulfills
+    // (fails immediately if it rejects); any matcher after it is enough to
+    // complete the assertion, so `.toBeDefined()` is used here instead.
+    await expect(proxy(await requestTo("/", "not-a-real-sealed-cookie-value"))).resolves.toBeDefined();
     const response = await proxy(await requestTo("/", "not-a-real-sealed-cookie-value"));
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe("http://localhost:3000/login");
@@ -50,7 +55,7 @@ describe("proxy", () => {
     const real = await validSessionCookie("some-user-id");
     const corrupted = real.slice(0, Math.floor(real.length / 2));
 
-    await expect(proxy(await requestTo("/weekly", corrupted))).resolves.not.toThrow();
+    await expect(proxy(await requestTo("/weekly", corrupted))).resolves.toBeDefined();
     const response = await proxy(await requestTo("/weekly", corrupted));
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe("http://localhost:3000/login");

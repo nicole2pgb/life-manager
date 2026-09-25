@@ -46,6 +46,9 @@ const GATED_MIGRATIONS: Record<
 > = {
   "0004_tighten_task_owner": {
     async check(connection) {
+      const errorCode = (error: unknown): string | undefined =>
+        error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
+
       try {
         const [rows] = await connection.query<mysql.RowDataPacket[]>(
           "SELECT COUNT(*) AS count FROM `tasks` WHERE `user_id` IS NULL",
@@ -56,8 +59,21 @@ const GATED_MIGRATIONS: Record<
         // hasn't run) trivially has no orphaned tasks — nothing to guard
         // against, so it's safe to let migrate() continue through the
         // whole pending set in one call.
-        if (error && typeof error === "object" && "code" in error && error.code === "ER_NO_SUCH_TABLE") {
+        if (errorCode(error) === "ER_NO_SUCH_TABLE") {
           return true;
+        }
+        // `tasks` exists but `user_id` doesn't yet (migration 0003 — which
+        // adds it as nullable — hasn't run in this same invocation, e.g. a
+        // database still on pre-auth migrations 0000-0002, exactly this
+        // project's own history). Every existing `tasks` row will become an
+        // orphan (user_id IS NULL) the instant 0003 adds that column, so the
+        // precondition reduces to "are there any existing rows at all?" —
+        // 0003 hasn't run yet, so `user_id IS NULL` can't be asked directly.
+        if (errorCode(error) === "ER_BAD_FIELD_ERROR") {
+          const [rows] = await connection.query<mysql.RowDataPacket[]>(
+            "SELECT COUNT(*) AS count FROM `tasks`",
+          );
+          return Number(rows[0].count) === 0;
         }
         throw error;
       }
