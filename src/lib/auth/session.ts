@@ -12,6 +12,20 @@ import type { SessionData } from "@/lib/auth/types";
 if (!process.env.SESSION_SECRET) {
   throw new Error("SESSION_SECRET is not set. Add it to .env.local (see .env.example).");
 }
+// iron-session enforces this same 32-character minimum itself (see
+// node_modules/iron-session/dist/index.js), but only inside getIronSession()
+// — which getSession() below wraps in a try/catch that treats ANY failure
+// (including this one) as "no session" and falls back to emptySession(). A
+// too-short secret would therefore never throw or log anywhere: every
+// createSession() call would silently no-op (save() on emptySession() does
+// nothing), and login/registration would appear to succeed (redirecting to
+// "/") while never actually setting a cookie — an extremely confusing
+// failure to debug. Checking the length here, at module load (i.e. process
+// startup), fails loudly instead, matching specs/user-login.md's "32+
+// characters" requirement.
+if (process.env.SESSION_SECRET.length < 32) {
+  throw new Error("SESSION_SECRET must be at least 32 characters long (see .env.example).");
+}
 
 // Exported so src/proxy.ts can decrypt the same cookie for its optimistic,
 // UX-only redirect check — see that file for why it must never be the only
